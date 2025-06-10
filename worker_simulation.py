@@ -18,6 +18,13 @@ class SimulationError(Exception):
 class TierConfig:
     num_threads: int
     max_workers: int
+    
+    def __post_init__(self):
+        """Validate configuration parameters after initialization."""
+        if self.num_threads <= 0:
+            raise ValueError(f"num_threads must be positive, got {self.num_threads}")
+        if self.max_workers <= 0:
+            raise ValueError(f"max_workers must be positive, got {self.max_workers}")
 
 @dataclass
 class WorkerConfig:
