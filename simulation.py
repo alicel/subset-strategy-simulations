@@ -26,8 +26,8 @@ class ThreadSimulator:
         self.task_start_times: List[float] = []  # Track start time for each task
 
 def run_simulation(items: List[WorkItem], num_threads: int, processing_time_unit: float = 1.0) -> List['ThreadSimulator']:
-    # Sort items by size in descending order
-    work_items = sorted(items, key=lambda x: x.size, reverse=True)
+    # Process items in the order they appear in the subset definition
+    work_items = items.copy()
     
     # Initialize threads
     threads = [ThreadSimulator(i) for i in range(num_threads)]
