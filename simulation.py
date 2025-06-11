@@ -26,7 +26,8 @@ class ThreadSimulator:
         self.task_start_times: List[float] = []  # Track start time for each task
 
 def run_simulation(items: List[WorkItem], num_threads: int, processing_time_unit: float = 1.0) -> List['ThreadSimulator']:
-    # Process items in the order they appear in the subset definition
+    # CRITICAL: Process items in the EXACT order they appear in the subset definition file
+    # This matches the real production system's behavior where SSTables are processed sequentially
     work_items = items.copy()
     
     # Initialize threads

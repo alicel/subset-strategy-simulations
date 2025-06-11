@@ -18,7 +18,7 @@ class SimulationError(Exception):
 class TierConfig:
     num_threads: int
     max_workers: int
-    
+
     def __post_init__(self):
         """Validate configuration parameters after initialization."""
         if self.num_threads <= 0:
@@ -372,7 +372,7 @@ class MultiTierSimulation:
         print(f"- Thread/task data: {thread_file}")
         print(f"- Summary statistics: {summary_file}")
 
-    def print_results(self, output_file: str = "simulation_results.html", show_details: bool = True, show_stragglers: bool = True, export_csv: bool = True, csv_base: str = None):
+    def print_results(self, output_file: str = "simulation_results.html", show_details: bool = True, show_stragglers: bool = True, export_csv: bool = True, csv_base: str = None, detailed_page_size: int = None):
         """Print simulation results and save visualization."""
         print("\nSimulation Results:")
         print(f"Total workers: {len(self.completed_workers)}")
@@ -393,9 +393,12 @@ class MultiTierSimulation:
         
         save_timeline_visualization(self.completed_workers, timeline_file)
         if show_details:
-            save_detailed_visualization(self.completed_workers, detailed_file)
+            save_detailed_visualization(self.completed_workers, detailed_file, detailed_page_size)
         print(f"\nVisualization saved to {output_file}")
         print("Open this file in your web browser to view the interactive timeline visualization.")
+        if show_details and detailed_page_size and detailed_page_size > 0 and len(self.completed_workers) > detailed_page_size:
+            print(f"\nDetailed visualization has been split into multiple pages ({detailed_page_size} workers per page)")
+            print("Use the navigation buttons to browse between pages")
         print("\nFeatures available in the visualization:")
         print("- Zoom and pan using mouse wheel and drag")
         print("- Hover over bars to see detailed information")

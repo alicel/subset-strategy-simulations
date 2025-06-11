@@ -102,6 +102,47 @@ class FileMetadata:
             full_path=path
         )
 
+def validate_directory_structure(directory: str):
+    """Validate that the input directory is a migration directory with the expected structure."""
+    if not os.path.exists(directory):
+        raise ValueError(f"Input directory does not exist: {directory}")
+    
+    if not os.path.isdir(directory):
+        raise ValueError(f"Input path is not a directory: {directory}")
+    
+    # Check for permission to read the directory
+    try:
+        os.listdir(directory)
+    except PermissionError:
+        raise ValueError(f"Permission denied accessing directory: {directory}")
+    
+    # Check that the directory directly contains a 'metadata' subdirectory
+    metadata_path = os.path.join(directory, "metadata")
+    if not os.path.exists(metadata_path):
+        raise ValueError(
+            f"Invalid migration directory structure.\n"
+            f"The specified directory does not contain a 'metadata' subdirectory: {directory}\n"
+            f"Expected structure: <migrationId>/metadata/subsets/<Label>/<subsetId>/<tier>/<numSSTablesInSubset>/<dataSizeOfSubset>/subset-<subsetId>\n"
+            f"Please specify the migration directory directly.\n"
+            f"For example: python run_multi_tier_simulation.py /path/to/SubsetDefinitions/mig100/\n"
+            f"The migration directory should directly contain the 'metadata' folder."
+        )
+    
+    if not os.path.isdir(metadata_path):
+        raise ValueError(f"'metadata' exists but is not a directory: {metadata_path}")
+    
+    # Check that metadata contains 'subsets' subdirectory
+    subsets_path = os.path.join(metadata_path, "subsets")
+    if not os.path.exists(subsets_path):
+        raise ValueError(
+            f"Invalid metadata structure.\n"
+            f"The metadata directory does not contain a 'subsets' subdirectory: {metadata_path}\n"
+            f"Expected: {metadata_path}/subsets/..."
+        )
+    
+    if not os.path.isdir(subsets_path):
+        raise ValueError(f"'subsets' exists but is not a directory: {subsets_path}")
+
 def find_subset_files(directory: str) -> List[str]:
     """Find all subset files in the given directory and its subdirectories."""
     subset_files = []
@@ -118,6 +159,10 @@ def find_subset_files(directory: str) -> List[str]:
 def parse_input_directory(directory: str) -> List[FileMetadata]:
     """Scan a directory for subset files and parse them into FileMetadata objects."""
     print(f"Scanning directory: {directory}")
+    
+    # Validate directory structure before scanning for files
+    validate_directory_structure(directory)
+    
     subset_files = find_subset_files(directory)
     print(f"Found {len(subset_files)} subset files")
     
@@ -135,6 +180,19 @@ def parse_input_directory(directory: str) -> List[FileMetadata]:
         print("\nWarnings during file parsing:")
         for error in errors:
             print(f"- {error}")
+    
+    # CRITICAL: Sort files by tier and then by subset_id numerically
+    # This matches the real production system which processes subsets in ascending numerical order
+    def sort_key(file_metadata):
+        try:
+            # Convert subset_id to integer for proper numerical sorting
+            subset_id_num = int(file_metadata.subset_id)
+        except ValueError:
+            # If subset_id is not a number, use string sorting as fallback
+            subset_id_num = float('inf')  # Put non-numeric IDs at the end
+        return (file_metadata.tier.value, subset_id_num, file_metadata.subset_id)
+    
+    valid_files.sort(key=sort_key)
     
     # Group files by tier for summary
     files_by_tier = {tier: [] for tier in WorkerTier}

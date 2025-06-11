@@ -2,6 +2,108 @@ from worker_simulation import WorkerConfig, TierConfig, MultiTierSimulation
 from file_processor import parse_input_directory
 import argparse
 import sys
+from datetime import datetime
+
+def save_configuration(args, config, config_file, total_time, num_files):
+    """Save the simulation configuration to a file."""
+    with open(config_file, 'w', encoding='utf-8') as f:
+        f.write("Multi-Tier Database Migration Simulation Configuration\n")
+        f.write("=" * 55 + "\n\n")
+        
+        # Timestamp
+        f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+        
+        # Input configuration
+        f.write("Input Configuration:\n")
+        f.write("-" * 20 + "\n")
+        f.write(f"Input directory: {args.directory}\n")
+        f.write(f"Files processed: {num_files}\n\n")
+        
+        # Worker tier configuration
+        f.write("Worker Tier Configuration:\n")
+        f.write("-" * 26 + "\n")
+        f.write(f"SMALL tier:\n")
+        f.write(f"  Threads per worker: {config.small.num_threads}\n")
+        f.write(f"  Max concurrent workers: {config.small.max_workers}\n\n")
+        
+        f.write(f"MEDIUM tier:\n")
+        f.write(f"  Threads per worker: {config.medium.num_threads}\n")
+        f.write(f"  Max concurrent workers: {config.medium.max_workers}\n\n")
+        
+        f.write(f"LARGE tier:\n")
+        f.write(f"  Threads per worker: {config.large.num_threads}\n")
+        f.write(f"  Max concurrent workers: {config.large.max_workers}\n\n")
+        
+        # Analysis configuration
+        f.write("Analysis Configuration:\n")
+        f.write("-" * 22 + "\n")
+        f.write(f"Straggler threshold: {args.straggler_threshold:.1f}% above average\n")
+        f.write(f"Straggler analysis: {'Disabled' if args.no_stragglers else 'Enabled'}\n")
+        f.write(f"CSV export: {'Disabled' if args.no_csv else 'Enabled'}\n")
+        f.write(f"Detailed visualization: {'Disabled' if args.summary_only else 'Enabled'}\n")
+        if not args.summary_only:
+            if args.detailed_page_size > 0:
+                f.write(f"Detailed pagination: {args.detailed_page_size} workers per page\n")
+            else:
+                f.write(f"Detailed pagination: Disabled (single file)\n")
+        f.write("\n")
+        
+        # Output configuration
+        f.write("Output Configuration:\n")
+        f.write("-" * 21 + "\n")
+        f.write(f"Output directory: {args.output_dir}\n")
+        f.write(f"Output base name: {args.output_name}\n\n")
+        
+        # Simulation results
+        f.write("Simulation Results:\n")
+        f.write("-" * 19 + "\n")
+        f.write(f"Total simulation time: {total_time:.2f} time units\n\n")
+        
+        # Command line used (reconstructed)
+        f.write("Equivalent Command Line:\n")
+        f.write("-" * 25 + "\n")
+        cmd_parts = [f"python run_multi_tier_simulation.py {args.directory}"]
+        
+        # Add non-default arguments
+        if args.small_threads != 6:
+            cmd_parts.append(f"--small-threads {args.small_threads}")
+        if args.medium_threads != 4:
+            cmd_parts.append(f"--medium-threads {args.medium_threads}")
+        if args.large_threads != 1:
+            cmd_parts.append(f"--large-threads {args.large_threads}")
+        if args.small_max_workers != 4:
+            cmd_parts.append(f"--small-max-workers {args.small_max_workers}")
+        if args.medium_max_workers != 6:
+            cmd_parts.append(f"--medium-max-workers {args.medium_max_workers}")
+        if args.large_max_workers != 10:
+            cmd_parts.append(f"--large-max-workers {args.large_max_workers}")
+        if args.straggler_threshold != 20.0:
+            cmd_parts.append(f"--straggler-threshold {args.straggler_threshold}")
+        if args.summary_only:
+            cmd_parts.append("--summary-only")
+        if args.no_stragglers:
+            cmd_parts.append("--no-stragglers")
+        if args.no_csv:
+            cmd_parts.append("--no-csv")
+        if args.output_name != 'simulation_results':
+            cmd_parts.append(f"--output-name {args.output_name}")
+        if args.output_dir != 'output_files':
+            cmd_parts.append(f"--output-dir {args.output_dir}")
+        if args.detailed_page_size != 30:
+            cmd_parts.append(f"--detailed-page-size {args.detailed_page_size}")
+        
+        # Format command line nicely (break long lines)
+        if len(" ".join(cmd_parts)) > 80:
+            f.write(cmd_parts[0] + " \\\n")
+            for part in cmd_parts[1:]:
+                f.write(f"    {part} \\\n")
+            # Remove the last backslash
+            f.seek(f.tell() - 3)
+            f.write("\n")
+        else:
+            f.write(" ".join(cmd_parts) + "\n")
+    
+    print(f"Configuration saved to {config_file}")
 
 def main():
     # Parse command line arguments
@@ -22,6 +124,8 @@ def main():
                        help='Base name for output files (default: simulation_results)')
     parser.add_argument('--output-dir', type=str, default='output_files', 
                        help='Directory to store output files (default: output_files)')
+    parser.add_argument('--detailed-page-size', type=int, default=30,
+                       help='Maximum number of workers per page in detailed visualization (default: 30, set to 0 to disable pagination)')
     
     args = parser.parse_args()
     
@@ -72,13 +176,18 @@ def main():
     output_base = args.output_name
     output_file = os.path.join(output_dir, f"{output_base}.html")
     csv_base = os.path.join(output_dir, output_base)
+    config_file = os.path.join(output_dir, f"config_{output_base}.txt")
+    
+    # Save configuration to file
+    save_configuration(args, config, config_file, total_time, len(files))
     
     simulation.print_results(
         output_file=output_file,
         show_details=not args.summary_only, 
         show_stragglers=not args.no_stragglers, 
         export_csv=not args.no_csv,
-        csv_base=csv_base
+        csv_base=csv_base,
+        detailed_page_size=args.detailed_page_size if args.detailed_page_size > 0 else None
     )
 
 if __name__ == "__main__":

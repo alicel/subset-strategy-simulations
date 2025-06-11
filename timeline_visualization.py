@@ -9,8 +9,14 @@ def create_timeline_visualization(workers: List[Worker]) -> go.Figure:
     print("\nDebug: Creating visualization")
     print(f"Number of workers: {len(workers)}")
     
-    # Sort workers by tier and start time
-    workers = sorted(workers, key=lambda w: (w.tier.value, w.start_time))
+    # Sort workers by tier, start time, and worker_id for consistent ordering
+    # When start times are identical (common with concurrent workers), use worker_id for numerical order
+    # Use explicit tier ordering: LARGE first, then MEDIUM, then SMALL
+    tier_order = {'LARGE': 0, 'MEDIUM': 1, 'SMALL': 2}
+    workers = sorted(workers, key=lambda w: (tier_order[w.tier.value], w.start_time, w.worker_id))
+    
+    # Reverse for visual display so that W0 appears at top and higher worker IDs appear below
+    workers = list(reversed(workers))
     
     # Create figure
     fig = go.Figure()
@@ -95,15 +101,17 @@ def create_timeline_visualization(workers: List[Worker]) -> go.Figure:
                         "End Time: %{x:.2f} units",
                         "Duration: %{customdata[0]:.2f} units",
                         "SSTable Count: %{customdata[1]}",
-                        "Data Size: %{customdata[2]:.2f} GB",
+                        "Data Size: %{customdata[2]} [%{customdata[5]:.2f} MB | %{customdata[6]:.2f} GB]",
                         "<extra>Click and drag to zoom. Double-click to reset.</extra>"
                     ]),
                     customdata=[[
                         worker.completion_time - worker.start_time,
                         worker.file.num_sstables if worker.file else 0,
-                        worker.file.data_size / (1024*1024*1024) if worker.file else 0,
+                        worker.file.data_size if worker.file else 0,
                         label,
-                        status_suffix
+                        status_suffix,
+                        worker.file.data_size / (1024*1024) if worker.file else 0,  # MB
+                        worker.file.data_size / (1024*1024*1024) if worker.file else 0  # GB
                     ]],
                     showlegend=False  # Disable legend - y-axis grouping and colors show tier info
                 ))

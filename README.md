@@ -144,6 +144,7 @@ python run_multi_tier_simulation.py <directory>
 - `--output-name <string>` - Base name for output files (default: "simulation_results")
 - `--output-dir <path>` - Directory to store output files (default: output_files)
 - `--no-csv` - Skip CSV data export for automated analysis
+- `--detailed-page-size <int>` - Maximum number of workers per page in detailed visualization (default: 30, set to 0 to disable pagination)
 
 ### Examples
 
@@ -172,6 +173,18 @@ python run_multi_tier_simulation.py test_data/ \
     --summary-only --straggler-threshold 15.0
 ```
 
+**Large dataset with custom pagination:**
+```bash
+python run_multi_tier_simulation.py test_data/ \
+    --detailed-page-size 50
+```
+
+**Disable pagination (single detailed file):**
+```bash
+python run_multi_tier_simulation.py test_data/ \
+    --detailed-page-size 0
+```
+
 ## Output Files
 
 The simulation generates several output files with detailed analysis results:
@@ -189,6 +202,55 @@ The simulation generates several output files with detailed analysis results:
    - Task-level granularity showing SSTable processing
    - Straggler threads highlighted with gold borders
    - Hover tooltips with task details
+   - **Pagination support**: For large datasets, automatically splits into multiple pages (e.g., `<output-name>_detailed_page1.html`, `<output-name>_detailed_page2.html`, etc.)
+   - **Navigation**: Page navigation with Previous/Next buttons and page numbers
+   - **Configurable page size**: Use `--detailed-page-size` to control workers per page (default: 30)
+
+### Configuration File
+
+**`config_<output-name>.txt`** - Simulation configuration record
+- Complete configuration used for the simulation run
+- Input directory and file count
+- Worker tier settings (threads per worker, max concurrent workers)
+- Analysis settings (straggler threshold, enabled features)
+- Output settings and simulation results
+
+## Performance Considerations
+
+### Large Dataset Handling
+
+For simulations with hundreds or thousands of workers, the detailed visualization can become very large and slow to load. The pagination feature automatically handles this:
+
+- **Default behavior**: Splits detailed view into pages of 30 workers each
+- **Customizable**: Use `--detailed-page-size` to adjust (e.g., 50 for larger pages, 10 for smaller pages)
+- **Single file option**: Set `--detailed-page-size 0` to disable pagination and create one large file
+- **Navigation**: Easy browsing between pages with intuitive navigation controls
+
+**Recommendations:**
+- For datasets with **< 50 workers**: Consider disabling pagination (`--detailed-page-size 0`)
+- For datasets with **50-200 workers**: Use default pagination (30 workers per page)
+- For datasets with **> 200 workers**: Consider smaller page sizes (10-20 workers per page)
+- **Timeline visualization** is not paginated and remains fast even with many workers
+
+### Processing Order Requirements
+
+**Critical Design Requirement**: This simulation accurately models a real production system that processes data in a specific order by design. The simulation enforces the exact same ordering requirements:
+
+#### 1. Subset Processing Order
+- **Requirement**: All subsets must be processed in **ascending numerical order** of their subset ID
+- **Implementation**: Files are automatically sorted numerically by subset ID within each tier
+- **Result**: Workers process subsets in order: W35, W50, W57, W566, W708, etc. (not filesystem order)
+
+#### 2. SSTable Processing Order  
+- **Requirement**: SSTables within each subset must be processed in the **exact order** they appear in the subset definition file
+- **Implementation**: SSTables are read sequentially from the file and processed in first-in-first-out (FIFO) order
+- **Result**: If a subset file lists SSTable IDs as `1001, 1003, 1002, 1005`, they are processed in exactly that order
+
+#### Why This Matters
+- **Accuracy**: Simulation results match real system behavior
+- **Consistency**: Reproducible results across multiple runs
+- **Validation**: Performance analysis reflects actual production constraints
+- **Debugging**: Issues in simulation correspond to real system bottlenecks
 
 ### CSV Data Export (when `--no-csv` is not used)
 
