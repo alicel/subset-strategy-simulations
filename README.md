@@ -48,7 +48,7 @@ The simulation expects a directory containing subset definition files with a spe
 **Path Components:**
 - `<migrationId>`: Unique identifier for the migration
 - `<Label>`: Migration label/name
-- `<subsetId>`: Unique subset identifier
+- `<subsetId>`: Unique subset identifier (**must be an integer**)
 - `<tier>`: Worker tier assignment (`SMALL`, `MEDIUM`, or `LARGE`)
 - `<numSSTablesInSubset>`: Number of SSTables in this subset (integer)
 - `<dataSizeOfSubset>`: Total data size in bytes (integer)
@@ -66,6 +66,41 @@ This represents:
 - Tier: `MEDIUM`
 - SSTable count: `7`
 - Data size: `1,071,940,830` bytes (~1.07 GB)
+
+### Subset File Content Format
+
+Each subset file must contain the individual SSTable definitions in one of the following formats:
+
+**Comma-separated format:**
+```
+sstable_id,size_in_bytes
+```
+
+**Space-separated format:**
+```
+sstable_id size_in_bytes
+```
+
+**Requirements:**
+- Each line represents one SSTable
+- `sstable_id` must be an integer
+- `size_in_bytes` must be an integer representing the SSTable size in bytes
+- Empty lines and lines starting with `#` are ignored (comments)
+- Both comma-separated and space-separated formats are supported
+
+**Example subset file content:**
+```
+# SSTables for subset 61
+1001,156789012
+1002,234567890
+1003,198765432
+1004,145678901
+1005,267890123
+1006,189012345
+1007,123456789
+```
+
+This example defines 7 SSTables with IDs from 1001 to 1007 and their respective sizes in bytes. The simulation will process these SSTables in the exact order they appear in the file.
 
 ## Installation
 
