@@ -46,12 +46,6 @@ def create_detailed_visualization(workers: List[Worker]) -> go.Figure:
         
         # Show ALL threads for this worker (including idle ones)
         for thread_id in range(worker.num_threads):
-            # Extract numeric IDs for compact labeling
-            compact_label = f"W{worker.worker_id}-T{thread_id}"
-            
-            # Track the thread label in the correct order
-            thread_labels.append(compact_label)
-            
             # Find the actual thread data if it exists
             actual_thread = None
             if worker.threads:
@@ -60,9 +54,28 @@ def create_detailed_visualization(workers: List[Worker]) -> go.Figure:
                         actual_thread = thread
                         break
             
+            # Create enhanced thread label with totals
+            if actual_thread and actual_thread.processed_items:
+                total_sstables = len(actual_thread.processed_items)
+                total_data_bytes = sum(item.size for item in actual_thread.processed_items)
+                total_data_gb = total_data_bytes / (1024*1024*1024)
+                compact_label = f"W{worker.worker_id}-T{thread_id} ({total_sstables} SSTs, {total_data_gb:.1f}GB)"
+            else:
+                # Idle thread
+                compact_label = f"W{worker.worker_id}-T{thread_id} (IDLE)"
+            
+            # Track the thread label in the correct order
+            thread_labels.append(compact_label)
+            
             if actual_thread and actual_thread.processed_items:
                 # This thread did work - show its tasks
                 is_straggler_thread = thread_id in worker.straggler_threads
+                
+                # Calculate thread totals for enhanced display
+                total_data_bytes = sum(item.size for item in actual_thread.processed_items)
+                total_sstables = len(actual_thread.processed_items)
+                total_data_mb = total_data_bytes / (1024*1024)
+                total_data_gb = total_data_bytes / (1024*1024*1024)
                 
                 # Set border properties for straggler threads (gold border) or normal borders (dark border)
                 straggler_border = dict(width=3, color='#FFD700') if is_straggler_thread else None
@@ -98,10 +111,15 @@ def create_detailed_visualization(workers: List[Worker]) -> go.Figure:
                         hovertemplate="<br>".join([
                             "Worker: %{customdata[2]}",
                             "Thread: %{customdata[3]}%{customdata[4]}",
-                            "Task: %{customdata[0]}",
-                            "Start: %{base:.2f}",
-                            "End: %{x:.2f}",
-                            "Size: %{customdata[1]} [%{customdata[5]:.2f} MB | %{customdata[6]:.2f} GB]"
+                            "<b>THREAD TOTALS:</b>",
+                            "  Total SSTables: %{customdata[7]}",
+                            "  Total Data: %{customdata[8]} bytes [%{customdata[9]:.2f} MB | %{customdata[10]:.2f} GB]",
+                            "",
+                            "<b>THIS TASK:</b>",
+                            "  Task: %{customdata[0]}",
+                            "  Start: %{base:.2f}",
+                            "  End: %{x:.2f}",
+                            "  Size: %{customdata[1]} [%{customdata[5]:.2f} MB | %{customdata[6]:.2f} GB]"
                         ]),
                         customdata=[[
                             item.key,
@@ -110,7 +128,11 @@ def create_detailed_visualization(workers: List[Worker]) -> go.Figure:
                             f"Thread {thread_id}",
                             " (STRAGGLER)" if is_straggler_thread else "",
                             item.size / (1024*1024),  # MB
-                            item.size / (1024*1024*1024)  # GB
+                            item.size / (1024*1024*1024),  # GB
+                            total_sstables,  # Thread total SSTables
+                            total_data_bytes,  # Thread total bytes
+                            total_data_mb,  # Thread total MB
+                            total_data_gb   # Thread total GB
                         ]],
                         showlegend=False  # Disable legend - y-axis labels provide worker/thread info
                     ))
@@ -127,7 +149,7 @@ def create_detailed_visualization(workers: List[Worker]) -> go.Figure:
     # Update layout
     thread_fig.update_layout(
         title={
-            'text': "Detailed Thread Timelines<br><sup>Thread-level execution details for each worker</sup>",
+            'text': "Detailed Thread Timelines<br><sup>Thread-level execution details with total SSTable count and data processed per thread</sup>",
             'x': 0.5,
             'xanchor': 'center',
             'y': 0.95,  # Moved down from 0.99 to 0.95 to prevent cutoff
@@ -164,7 +186,7 @@ def create_detailed_visualization(workers: List[Worker]) -> go.Figure:
             )
         ),
         margin=dict(
-            l=150,  # Increased left margin for thread labels
+            l=250,  # Increased left margin for enhanced thread labels with totals
             r=20,
             t=150,  # Increased top margin from 120 to 150 for better title space
             b=30,
@@ -271,7 +293,7 @@ def save_detailed_visualization_paginated(workers: List[Worker], output_path: st
             continue
             
         # Update title to include page information
-        title_text = f"Detailed Thread Timelines - Page {page_num} of {total_pages}<br><sup>Workers {start_idx + 1}-{end_idx} of {total_workers} (Thread-level execution details)</sup>"
+        title_text = f"Detailed Thread Timelines - Page {page_num} of {total_pages}<br><sup>Workers {start_idx + 1}-{end_idx} of {total_workers} (Thread-level execution with SSTable count and data totals)</sup>"
         thread_fig.update_layout(title={'text': title_text})
         
         # Generate page filename - first page is always _detailed.html
