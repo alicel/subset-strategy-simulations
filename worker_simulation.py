@@ -177,9 +177,10 @@ class Worker:
         }
 
 class MultiTierSimulation:
-    def __init__(self, config: WorkerConfig, straggler_threshold_percent: float = 20.0):
+    def __init__(self, config: WorkerConfig, straggler_threshold_percent: float = 20.0, concurrent_execution: bool = True):
         self.config = config
         self.straggler_threshold_percent = straggler_threshold_percent
+        self.concurrent_execution = concurrent_execution  # New parameter for execution mode
         self.current_time = 0.0
         self.active_workers: Dict[WorkerTier, List[Worker]] = {
             WorkerTier.SMALL: [],
@@ -226,7 +227,14 @@ class MultiTierSimulation:
     def run_simulation(self, files: List[FileMetadata]) -> float:
         if not files:
             raise SimulationError("No files provided for simulation")
-            
+        
+        if self.concurrent_execution:
+            return self._run_concurrent_simulation(files)
+        else:
+            return self._run_sequential_simulation(files)
+    
+    def _run_concurrent_simulation(self, files: List[FileMetadata]) -> float:
+        """Original parallel execution mode - all tiers can run simultaneously."""
         # Group files by tier
         files_by_tier: Dict[WorkerTier, List[FileMetadata]] = {
             WorkerTier.SMALL: [],
@@ -276,6 +284,92 @@ class MultiTierSimulation:
             print("\nWarning: Some files failed to process:", file=sys.stderr)
             for file, error in failed_files:
                 print(f"- {file.full_path}: {error}", file=sys.stderr)
+        
+        self.simulation_completed = True
+        return self.current_time
+    
+    def _run_sequential_simulation(self, files: List[FileMetadata]) -> float:
+        """Sequential execution mode - process one tier at a time: LARGE -> MEDIUM -> SMALL."""
+        # Group files by tier
+        files_by_tier: Dict[WorkerTier, List[FileMetadata]] = {
+            WorkerTier.SMALL: [],
+            WorkerTier.MEDIUM: [],
+            WorkerTier.LARGE: []
+        }
+        for file in files:
+            files_by_tier[file.tier].append(file)
+        
+        # Process tiers in order: LARGE -> MEDIUM -> SMALL
+        tier_order = [WorkerTier.LARGE, WorkerTier.MEDIUM, WorkerTier.SMALL]
+        
+        print("\nSequential execution mode: Processing tiers in order LARGE -> MEDIUM -> SMALL")
+        
+        for tier in tier_order:
+            tier_files = files_by_tier[tier]
+            if not tier_files:
+                print(f"No {tier.value} files to process, skipping tier.")
+                continue
+                
+            print(f"\nProcessing {tier.value} tier: {len(tier_files)} files")
+            tier_start_time = self.current_time
+            
+            # Process all files for this tier before moving to the next
+            failed_files = []
+            
+            # Initial assignment of files to workers for this tier only
+            while tier_files and self.can_add_worker(tier):
+                try:
+                    file = tier_files.pop(0)
+                    self.add_worker(tier, file)
+                except SimulationError as e:
+                    print(f"Warning: Failed to process file {file.full_path}: {str(e)}", file=sys.stderr)
+                    failed_files.append((file, str(e)))
+                    continue
+            
+            # Process completion events until all files for this tier are done
+            while self.completion_events and tier_files:
+                completion_time, _, completed_worker = heappop(self.completion_events)
+                self.current_time = completion_time
+                
+                # Only process workers from the current tier
+                if completed_worker.tier == tier:
+                    self.remove_worker(completed_worker)
+                    
+                    # Assign next file from the same tier if available
+                    if tier_files:
+                        try:
+                            file = tier_files.pop(0)
+                            self.add_worker(tier, file)
+                        except SimulationError as e:
+                            print(f"Warning: Failed to process file {file.full_path}: {str(e)}", file=sys.stderr)
+                            failed_files.append((file, str(e)))
+                            continue
+                else:
+                    # Re-add events from other tiers back to the queue (shouldn't happen in sequential mode)
+                    heappush(self.completion_events, (completion_time, completed_worker.worker_id, completed_worker))
+            
+            # Wait for all remaining workers of this tier to complete
+            remaining_events = []
+            while self.completion_events:
+                completion_time, worker_id, completed_worker = heappop(self.completion_events)
+                if completed_worker.tier == tier:
+                    self.current_time = completion_time
+                    self.remove_worker(completed_worker)
+                else:
+                    # Keep events from other tiers for later (shouldn't happen in sequential mode)
+                    remaining_events.append((completion_time, worker_id, completed_worker))
+            
+            # Restore any remaining events (shouldn't happen in sequential mode)
+            for event in remaining_events:
+                heappush(self.completion_events, event)
+            
+            if failed_files:
+                print(f"\nWarning: Some {tier.value} files failed to process:", file=sys.stderr)
+                for file, error in failed_files:
+                    print(f"- {file.full_path}: {error}", file=sys.stderr)
+            
+            tier_duration = self.current_time - tier_start_time
+            print(f"Completed {tier.value} tier in {tier_duration:.2f} time units")
         
         self.simulation_completed = True
         return self.current_time

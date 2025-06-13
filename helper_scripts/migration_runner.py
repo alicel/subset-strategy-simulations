@@ -32,9 +32,34 @@ class MigrationRunner:
         self.bucket_name = bucket_name
         self.s3_client = None
         
+    def check_sso_session(self, profile: str = "astra-conn") -> bool:
+        """Check if there is an active AWS SSO session.
+        
+        Args:
+            profile: AWS profile name to check
+            
+        Returns:
+            bool: True if there is an active session, False otherwise
+        """
+        try:
+            # Try to get caller identity which will fail if session is expired
+            result = subprocess.run(
+                ["aws", "sts", "get-caller-identity", f"--profile={profile}"],
+                check=True,
+                capture_output=True,
+                text=True
+            )
+            return True
+        except subprocess.CalledProcessError:
+            return False
+    
     def aws_sso_login(self, profile: str = "astra-conn"):
-        """Perform AWS SSO login with the specified profile."""
-        logger.info(f"Performing AWS SSO login with profile: {profile}")
+        """Perform AWS SSO login with the specified profile if no active session exists."""
+        if self.check_sso_session(profile):
+            logger.info(f"AWS SSO session is already active for profile: {profile}")
+            return True
+        
+        logger.info(f"No active AWS SSO session found. Performing login with profile: {profile}")
         try:
             result = subprocess.run(
                 ["aws", "sso", "login", f"--profile={profile}"],
@@ -93,14 +118,19 @@ class MigrationRunner:
             'small_tier_thread_subset_max_size_floor_gb': 'MIGRATION_SMALL_TIER_THREAD_SUBSET_MAX_SIZE_FLOOR_GB',
             'small_tier_worker_num_threads': 'MIGRATION_SMALL_TIER_WORKER_NUM_THREADS',
             'subset_calculation_label': 'MIGRATION_SUBSET_CALCULATION_LABEL',
-            'subset_calculation_strategy': 'MIGRATION_SUBSET_CALCULATION_STRATEGY'
+            'subset_calculation_strategy': 'MIGRATION_SUBSET_CALCULATION_STRATEGY',
+            'max_num_sstables_per_subset': 'MIGRATION_MAX_NUM_SSTABLES_PER_SUBSET'
         }
         
         # Set environment variables from config
         for config_key, env_var_name in env_var_mapping.items():
             if config_key in migration_config:
                 os.environ[env_var_name] = str(migration_config[config_key])
-                logger.info(f"Set {env_var_name}={migration_config[config_key]}")
+                # Redact sensitive values in logs
+                if any(s in env_var_name.upper() for s in ["KEY", "SECRET", "ACCESS"]):
+                    logger.info(f"Set {env_var_name}=***REDACTED***")
+                else:
+                    logger.info(f"Set {env_var_name}={migration_config[config_key]}")
         
         # Always set MIGRATION_ID to the current migration ID
         os.environ['MIGRATION_ID'] = migration_id
@@ -210,8 +240,12 @@ class MigrationRunner:
             logger.error(f"Failed to download from S3 for {migration_id}: {e}")
             return None
     
-    def run_simulation(self, migration_id: str, download_dir: str) -> bool:
-        """Run the simulation using downloaded data."""
+    def run_simulation(self, migration_id: str, download_dir: str) -> tuple[bool, dict]:
+        """Run the simulation using downloaded data.
+        
+        Returns:
+            tuple: (success: bool, output_files: dict) where output_files contains paths to generated files
+        """
         logger.info(f"Running simulation for migration ID: {migration_id}")
         
         simulation_config = self.config.get('simulation', {})
@@ -245,37 +279,26 @@ class MigrationRunner:
             command.append('--summary-only')
         if analysis_config.get('no_stragglers', False):
             command.append('--no-stragglers')
+        if analysis_config.get('sequential_execution', False):
+            command.append('--sequential-execution')
         
         # Output Options
         output_config = simulation_config.get('output', {})
+        output_name = output_config.get('output_name', 'migration_simulation')
+        if output_name:
+            # Append migration ID to output name if not already present
+            if not output_name.endswith(migration_id):
+                output_name = f"{output_name}_{migration_id}"
+            command.extend(['--output-name', output_name])
         
-        # Generate output name with migration ID
-        base_output_name = output_config.get('output_name', 'simulation_results')
-        output_name = f"{base_output_name}_{migration_id}"
-        command.extend(['--output-name', output_name])
+        # Handle output directory with migration ID template
+        output_dir = output_config.get('output_dir', 'simulation_outputs/{migration_id}')
+        if output_dir:
+            # Replace {migration_id} template with actual migration ID
+            output_dir = output_dir.replace('{migration_id}', migration_id)
+            command.extend(['--output-dir', output_dir])
         
-        if 'output_dir' in output_config:
-            command.extend(['--output-dir', output_config['output_dir']])
-        else:
-            # Default output directory with migration ID
-            default_output_dir = f"simulation_outputs/{migration_id}"
-            command.extend(['--output-dir', default_output_dir])
-        
-        if output_config.get('no_csv', False):
-            command.append('--no-csv')
-        if 'detailed_page_size' in output_config:
-            command.extend(['--detailed-page-size', str(output_config['detailed_page_size'])])
-        
-        # Add any additional custom arguments
-        custom_args = simulation_config.get('custom_args', [])
-        for arg in custom_args:
-            if isinstance(arg, str):
-                processed_arg = arg.replace('{migration_id}', migration_id).replace('{download_dir}', download_dir)
-                command.append(processed_arg)
-            else:
-                command.append(str(arg))
-        
-        # Run from the parent directory (project root)
+        # Run from the parent directory so that paths work correctly
         parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         
         logger.info(f"Executing simulation command: {' '.join(command)}")
@@ -287,19 +310,45 @@ class MigrationRunner:
                 check=True,
                 capture_output=True,
                 text=True,
-                cwd=parent_dir  # Run from project root
+                cwd=parent_dir
             )
             logger.info(f"Simulation completed successfully for {migration_id}")
-            logger.debug(f"Simulation output: {result.stdout}")
-            if result.stdout:
-                logger.info(f"Simulation stdout: {result.stdout}")
-            return True
+            
+            # Calculate output file paths
+            output_files = {}
+            if output_dir and output_name:
+                abs_output_dir = os.path.abspath(os.path.join(parent_dir, output_dir))
+                output_files['timeline'] = os.path.join(abs_output_dir, f"{output_name}_timeline.html")
+                output_files['detailed'] = os.path.join(abs_output_dir, f"{output_name}_detailed.html")
+                
+                logger.debug(f"Expected timeline file: {output_files['timeline']}")
+                logger.debug(f"Expected detailed file: {output_files['detailed']}")
+                
+                # Check for paginated detailed files
+                detailed_pages = []
+                page_num = 1
+                while True:
+                    if page_num == 1:
+                        page_file = output_files['detailed']
+                    else:
+                        page_file = os.path.join(abs_output_dir, f"{output_name}_detailed_page{page_num}.html")
+                    
+                    if os.path.exists(page_file):
+                        detailed_pages.append(page_file)
+                        page_num += 1
+                    else:
+                        break
+                
+                output_files['detailed_pages'] = detailed_pages
+                output_files['total_pages'] = len(detailed_pages)
+            
+            return True, output_files
         except subprocess.CalledProcessError as e:
             logger.error(f"Simulation failed for {migration_id}: {e}")
             logger.error(f"Error output: {e.stderr}")
             if e.stdout:
                 logger.error(f"Standard output: {e.stdout}")
-            return False
+            return False, {}
     
     def process_migration_range(self, start_id: int, end_id: int, prefix: str = "mig"):
         """Process a range of migration IDs."""
@@ -307,6 +356,7 @@ class MigrationRunner:
         
         successful_migrations = []
         failed_migrations = []
+        migration_results = {}  # Track output files for each successful migration
         
         for migration_num in range(start_id, end_id + 1):
             migration_id = f"{prefix}{migration_num}"
@@ -328,11 +378,13 @@ class MigrationRunner:
                     continue
                 
                 # Run simulation
-                if not self.run_simulation(migration_id, download_dir):
+                success, output_files = self.run_simulation(migration_id, download_dir)
+                if not success:
                     failed_migrations.append(migration_id)
                     continue
                 
                 successful_migrations.append(migration_id)
+                migration_results[migration_id] = output_files
                 logger.info(f"Successfully processed migration: {migration_id}")
                 
             except Exception as e:
@@ -344,7 +396,37 @@ class MigrationRunner:
         logger.info(f"  Successful: {len(successful_migrations)} - {successful_migrations}")
         logger.info(f"  Failed: {len(failed_migrations)} - {failed_migrations}")
         
-        return successful_migrations, failed_migrations
+        return successful_migrations, failed_migrations, migration_results
+    
+    def print_results_summary(self, migration_results: dict):
+        """Print a summary of simulation results to stdout."""
+        if not migration_results:
+            print("\nNo successful simulations to report.")
+            return
+        
+        print("\n" + "="*80)
+        print("SIMULATION RESULTS SUMMARY")
+        print("="*80)
+        
+        for migration_id, output_files in migration_results.items():
+            print(f"\nSimulation executed for {migration_id}. Results available at:")
+            
+            # Always print timeline path with file:// prefix
+            if 'timeline' in output_files:
+                print(f"  file://{output_files['timeline']}")
+            
+            # Always print detailed path with file:// prefix
+            if 'detailed_pages' in output_files and output_files['detailed_pages']:
+                total_pages = output_files['total_pages']
+                if total_pages == 1:
+                    print(f"  file://{output_files['detailed_pages'][0]}")
+                else:
+                    print(f"  file://{output_files['detailed_pages'][0]} [{total_pages} total pages]")
+            elif 'detailed' in output_files:
+                # Fallback if detailed_pages is empty but detailed path exists
+                print(f"  file://{output_files['detailed']}")
+        
+        print("\n" + "="*80)
     
     def run(self, start_id: int, end_id: int, prefix: str = "mig"):
         """Main execution method."""
@@ -363,7 +445,10 @@ class MigrationRunner:
             return False
         
         # Step 3: Process migration range (environment variables are set per migration)
-        successful, failed = self.process_migration_range(start_id, end_id, prefix)
+        successful, failed, migration_results = self.process_migration_range(start_id, end_id, prefix)
+        
+        # Step 4: Print results summary
+        self.print_results_summary(migration_results)
         
         return len(failed) == 0
 
@@ -384,7 +469,8 @@ def create_sample_config():
             "small_tier_thread_subset_max_size_floor_gb": 2,
             "small_tier_worker_num_threads": 4,
             "subset_calculation_label": "mytieredcalc",
-            "subset_calculation_strategy": "tiered"
+            "subset_calculation_strategy": "tiered",
+            "max_num_sstables_per_subset": 250
         },
         "go_command": {
             "executable": "./mba/migration-bucket-accessor",
@@ -405,7 +491,8 @@ def create_sample_config():
             "analysis": {
                 "straggler_threshold": 20.0,
                 "summary_only": False,
-                "no_stragglers": False
+                "no_stragglers": False,
+                "sequential_execution": False
             },
             "output": {
                 "output_name": "migration_simulation",
@@ -439,47 +526,68 @@ def create_sample_config():
     print("  MIGRATION_SMALL_TIER_WORKER_NUM_THREADS")
     print("  MIGRATION_SUBSET_CALCULATION_LABEL")
     print("  MIGRATION_SUBSET_CALCULATION_STRATEGY")
+    print("  MIGRATION_MAX_NUM_SSTABLES_PER_SUBSET")
     print()
     print("Simulation options configured:")
     print("  Worker Configuration: threads per tier, max workers per tier")
-    print("  Analysis Options: straggler threshold, summary mode, straggler analysis")
+    print("  Analysis Options: straggler threshold, summary mode, straggler analysis, execution mode")
     print("  Output Options: naming, directory structure, CSV export, pagination")
+    print()
+    print("Execution modes:")
+    print("  sequential_execution: false (default) - All tiers process concurrently")
+    print("  sequential_execution: true - Process tiers sequentially (LARGE->MEDIUM->SMALL)")
+
+def find_config_file(config_path: str = None) -> str:
+    """Find the configuration file in the current directory or helper_scripts directory.
+    
+    Args:
+        config_path: Optional explicit path to config file
+        
+    Returns:
+        Path to the found config file
+        
+    Raises:
+        FileNotFoundError: If no config file is found
+    """
+    if config_path:
+        if os.path.exists(config_path):
+            return config_path
+        raise FileNotFoundError(f"Specified configuration file not found: {config_path}")
+    
+    # Try to find migration_runner_config.yaml in current directory
+    current_dir = os.getcwd()
+    config_file = os.path.join(current_dir, 'migration_runner_config.yaml')
+    if os.path.exists(config_file):
+        return config_file
+    
+    # Try to find migration_runner_config.yaml in helper_scripts directory
+    helper_scripts_dir = os.path.dirname(os.path.abspath(__file__))
+    config_file = os.path.join(helper_scripts_dir, 'migration_runner_config.yaml')
+    if os.path.exists(config_file):
+        return config_file
+    
+    raise FileNotFoundError("No configuration file found. Please create migration_runner_config.yaml in the current directory or helper_scripts directory.")
 
 def main():
-    parser = argparse.ArgumentParser(description="Migration Runner Script")
-    parser.add_argument("--config", "-c", default="migration_runner_config.yaml", help="Path to configuration file (default: migration_runner_config.yaml)")
-    parser.add_argument("--start-id", "-s", type=int, help="Starting migration ID number")
-    parser.add_argument("--end-id", "-e", type=int, help="Ending migration ID number")
-    parser.add_argument("--prefix", "-p", default="mig", help="Migration ID prefix (default: mig)")
-    parser.add_argument("--bucket", "-b", help="S3 bucket name (overrides config)")
-    parser.add_argument("--create-sample-config", action="store_true", help="Create a sample configuration file")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging")
-    
+    parser = argparse.ArgumentParser(description='Run migration processing for a range of IDs')
+    parser.add_argument('--start-id', type=int, required=True, help='Starting migration ID')
+    parser.add_argument('--end-id', type=int, required=True, help='Ending migration ID')
+    parser.add_argument('--prefix', type=str, default='mig', help='Prefix for migration IDs (default: mig)')
+    parser.add_argument('--config-path', type=str, help='Path to configuration file (default: migration_runner_config.yaml)')
+    parser.add_argument('--bucket', type=str, help='S3 bucket name')
     args = parser.parse_args()
     
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
-    
-    if args.create_sample_config:
-        create_sample_config()
-        return
-    
-    # Check required arguments when not creating sample config
-    if args.start_id is None:
-        parser.error("--start-id/-s is required when not using --create-sample-config")
-    if args.end_id is None:
-        parser.error("--end-id/-e is required when not using --create-sample-config")
-    
-    if not os.path.exists(args.config):
-        logger.error(f"Configuration file not found: {args.config}")
-        logger.info("Use --create-sample-config to generate a sample configuration file")
-        logger.info(f"Or create your configuration file at the default location: {args.config}")
+    try:
+        # Find the config file
+        config_path = find_config_file(args.config_path)
+        logger.info(f"Using configuration file: {config_path}")
+        
+        # Initialize and run the migration processor
+        runner = MigrationRunner(config_path, args.bucket)
+        runner.run(args.start_id, args.end_id, args.prefix)
+    except Exception as e:
+        logger.error(f"Error: {e}")
         sys.exit(1)
-    
-    runner = MigrationRunner(args.config, args.bucket)
-    success = runner.run(args.start_id, args.end_id, args.prefix)
-    
-    sys.exit(0 if success else 1)
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main() 

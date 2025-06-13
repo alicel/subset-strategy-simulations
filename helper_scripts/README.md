@@ -1,6 +1,96 @@
 # Helper Scripts
 
-This directory contains utility scripts for the TieredStrategySimulation project.
+This directory contains helper scripts for running the tiered strategy simulation.
+
+## Migration Runner
+
+The `migration_runner.py` script automates the process of running the tiered strategy simulation. It handles:
+- AWS SSO login
+- Configuration parsing
+- Environment variable management
+- Execution of the tiered strategy
+- Downloading strategy results from S3
+- Running the simulation with the downloaded results
+
+### Prerequisites
+
+1. Python 3.6 or higher
+2. Required Python packages (install using `pip install -r requirements.txt`):
+   - boto3
+   - click
+   - python-dotenv
+3. AWS CLI configured with SSO
+4. Go environment set up for the simulation
+
+### Configuration
+
+1. Generate a sample configuration file:
+   ```bash
+   python3 migration_runner.py --create-sample-config
+   ```
+   This will create `migration_config_sample.yaml`
+
+2. Edit `migration_config_sample.yaml` with your specific settings:
+   ```yaml
+   migration:
+     cloud_provider: "AWS"
+     access_key: "YOUR_ACCESS_KEY_HERE"
+     bucket: "your-bucket-name"
+     log_level: "DEBUG"
+     medium_tier_max_sstable_size_gb: 50
+     medium_tier_worker_num_threads: 6
+     optimize_packing_medium_subsets: false
+     region: "your-aws-region"
+     secret_key: "YOUR_SECRET_KEY_HERE"
+     small_tier_max_sstable_size_gb: 10
+     small_tier_thread_subset_max_size_floor_gb: 2
+     small_tier_worker_num_threads: 4
+     subset_calculation_label: "mytieredcalc"
+     subset_calculation_strategy: "tiered"
+     max_num_sstables_per_subset: 250
+   ```
+
+3. **Important**: After customizing the configuration, rename the file to the default name that the script expects:
+   ```bash
+   mv migration_config_sample.yaml migration_runner_config.yaml
+   ```
+
+### Usage
+
+Run the script with:
+```bash
+python migration_runner.py
+```
+
+The script will:
+1. Log in to AWS SSO
+2. Parse the configuration
+3. Execute the Go command
+4. Download results from S3
+5. Run the simulation with the downloaded objects
+
+### Environment Variables
+
+The script uses the following environment variables:
+- `AWS_PROFILE`: AWS profile to use (default: "default")
+- `AWS_REGION`: AWS region to use (default: from config)
+- `GO_COMMAND`: Go command to run (default: from config)
+- `RESULTS_DIR`: Directory to store results (default: from config)
+
+You can set these in a `.env` file in the same directory as the script.
+
+### Error Handling
+
+The script includes error handling for:
+- AWS SSO login failures
+- Configuration file issues
+- Go command execution errors
+- S3 download failures
+- Simulation execution errors
+
+### Logging
+
+The script logs all operations to the console with appropriate log levels (INFO, ERROR, etc.).
 
 ## Migration Runner Script
 
@@ -73,6 +163,7 @@ migration:
   small_tier_worker_num_threads: 4                        # MIGRATION_SMALL_TIER_WORKER_NUM_THREADS
   subset_calculation_label: "mytieredcalc"                # MIGRATION_SUBSET_CALCULATION_LABEL
   subset_calculation_strategy: "tiered"                   # MIGRATION_SUBSET_CALCULATION_STRATEGY
+  max_num_sstables_per_subset: 250
 
 # Go command configuration
 go_command:
@@ -99,6 +190,7 @@ simulation:
     straggler_threshold: 20.0           # --straggler-threshold (percentage)
     summary_only: false                 # --summary-only flag
     no_stragglers: false                # --no-stragglers flag
+    sequential_execution: false         # --sequential-execution flag (process tiers sequentially)
   
   # Output configuration
   output:
@@ -147,6 +239,7 @@ Maps directly to `run_multi_tier_simulation.py` CLI options.
 - `straggler_threshold`: Percentage threshold for straggler detection
 - `summary_only`: Generate only summary visualizations
 - `no_stragglers`: Skip straggler analysis
+- `sequential_execution`: Process tiers sequentially (LARGE→MEDIUM→SMALL) instead of concurrently
 
 **Output Options:**
 - `output_name`: Base name for output files (migration ID appended automatically)
@@ -174,6 +267,7 @@ MIGRATION_SMALL_TIER_THREAD_SUBSET_MAX_SIZE_FLOOR_GB=2
 MIGRATION_SMALL_TIER_WORKER_NUM_THREADS=4
 MIGRATION_SUBSET_CALCULATION_LABEL=mytieredcalc
 MIGRATION_SUBSET_CALCULATION_STRATEGY=tiered
+MIGRATION_MAX_NUM_SSTABLES_PER_SUBSET=250
 ```
 
 ### Template Variables
@@ -234,6 +328,19 @@ simulation:
   output:
     no_csv: true
     output_name: "quick_analysis"
+```
+
+#### Sequential Execution Configuration
+```yaml
+migration:
+  # ... migration settings ...
+
+simulation:
+  analysis:
+    sequential_execution: true   # Process LARGE→MEDIUM→SMALL sequentially
+    straggler_threshold: 25.0
+  output:
+    output_name: "sequential_analysis"
 ```
 
 ### Execution Flow

@@ -122,6 +122,17 @@ This example defines 7 SSTables with IDs from 1001 to 1007 and their respective 
 python run_multi_tier_simulation.py <directory>
 ```
 
+**Important Note**: The script must be run from the root directory of the project. If you're using the helper scripts (like `migration_runner.py`), make sure to run them from the project root directory:
+
+```bash
+# Correct way (from project root):
+python helper_scripts/migration_runner.py --start-id 100 --end-id 102
+
+# Incorrect way (from helper_scripts directory):
+cd helper_scripts
+python migration_runner.py --start-id 100 --end-id 102  # This will fail
+```
+
 ### Command Line Options
 
 #### Required Arguments

@@ -148,29 +148,23 @@ def create_detailed_visualization(workers: List[Worker]) -> go.Figure:
     
     # Update layout
     thread_fig.update_layout(
-        title={
-            'text': "Detailed Thread Timelines<br><sup>Thread-level execution details with total SSTable count and data processed per thread</sup>",
-            'x': 0.5,
-            'xanchor': 'center',
-            'y': 0.95,  # Moved down from 0.99 to 0.95 to prevent cutoff
-            'yanchor': 'top'  # Anchor to top of title
-        },
-
-        height=max(800, current_idx * 25),  # Ensure minimum height and proper spacing
+        title="Detailed Thread Timelines<br><sup>Thread-level execution details with total SSTable count and data processed per thread</sup>",
+        autosize=True,
+        height=max(800, current_idx * 25),
         showlegend=False,
         hovermode="closest",
-        barmode='stack',  # Changed from 'overlay' to prevent overlap
-        bargap=0,  # Remove gap between bars since we're controlling spacing with y-values
+        barmode='stack',
+        bargap=0,
         bargroupgap=0,
         yaxis=dict(
-            showticklabels=True,  # Show thread labels
+            showticklabels=True,
             ticktext=thread_labels,
             tickvals=list(range(len(thread_labels))),
             showgrid=True,
             gridwidth=1,
             gridcolor='rgba(211, 211, 211, 0.5)',
             side='left',
-            range=[-0.5, current_idx - 0.5]  # Tight range to avoid extra space
+            range=[-0.5, current_idx - 0.5]
         ),
         xaxis=dict(
             title="Time Units",
@@ -178,7 +172,7 @@ def create_detailed_visualization(workers: List[Worker]) -> go.Figure:
             gridwidth=1,
             gridcolor='rgba(211, 211, 211, 0.5)',
             zeroline=False,
-            rangemode='tozero',  # Ensure x-axis starts from 0
+            rangemode='tozero',
             rangeslider=dict(
                 visible=True,
                 thickness=0.10,
@@ -186,9 +180,9 @@ def create_detailed_visualization(workers: List[Worker]) -> go.Figure:
             )
         ),
         margin=dict(
-            l=250,  # Increased left margin for enhanced thread labels with totals
+            l=250,
             r=20,
-            t=150,  # Increased top margin from 120 to 150 for better title space
+            t=200,
             b=30,
             pad=4
         ),
@@ -294,7 +288,11 @@ def save_detailed_visualization_paginated(workers: List[Worker], output_path: st
             
         # Update title to include page information
         title_text = f"Detailed Thread Timelines - Page {page_num} of {total_pages}<br><sup>Workers {start_idx + 1}-{end_idx} of {total_workers} (Thread-level execution with SSTable count and data totals)</sup>"
-        thread_fig.update_layout(title={'text': title_text})
+        thread_fig.update_layout(
+            title=title_text,
+            autosize=True,
+            margin=dict(t=200)
+        )
         
         # Generate page filename - first page is always _detailed.html
         if page_num == 1:
