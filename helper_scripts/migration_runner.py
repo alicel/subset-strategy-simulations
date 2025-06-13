@@ -105,12 +105,6 @@ class MigrationRunner:
         # Always set MIGRATION_ID to the current migration ID
         os.environ['MIGRATION_ID'] = migration_id
         logger.info(f"Set MIGRATION_ID={migration_id}")
-        
-        # Set any additional custom environment variables
-        custom_env_vars = self.config.get('custom_environment_variables', {})
-        for key, value in custom_env_vars.items():
-            os.environ[key] = str(value)
-            logger.info(f"Set custom environment variable: {key}")
     
     def execute_go_command(self, migration_id: str) -> bool:
         """Execute the Go command for a specific migration ID."""
@@ -420,9 +414,6 @@ def create_sample_config():
                 "detailed_page_size": 30
             },
             "custom_args": []
-        },
-        "custom_environment_variables": {
-            "CUSTOM_VAR": "custom_value"
         }
     }
     

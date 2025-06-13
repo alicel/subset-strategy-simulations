@@ -3,3 +3,5 @@
 __pycache__/
 venv/
 output_files/
+helper_scripts/migration_runner_config.yaml
+helper_scripts/migration_config_sample.yaml

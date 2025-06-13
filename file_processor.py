@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import List
 import re
 from visualization_base import WorkerTier
+from simulation import WorkItem
 import os
 from pathlib import Path
 
@@ -15,7 +16,7 @@ class FileMetadata:
     num_sstables: int
     data_size: int
     
-    def get_sstables(self) -> List['WorkItem']:
+    def get_sstables(self) -> List[WorkItem]:
         """Read actual SSTable definitions from the subset file.
         
         Returns:
@@ -24,7 +25,6 @@ class FileMetadata:
         Note: This method should parse the actual subset file content to extract
         the real SSTable definitions. The format needs to be specified.
         """
-        from simulation import WorkItem
         
         try:
             # Read the subset file content

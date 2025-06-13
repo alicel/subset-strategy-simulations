@@ -109,10 +109,6 @@ simulation:
   
   # Additional custom arguments
   custom_args: []                       # Any additional CLI arguments
-
-# Additional environment variables
-custom_environment_variables:
-  CUSTOM_VAR: "custom_value"            # Any additional env vars needed
 ```
 
 ### Configuration Sections
