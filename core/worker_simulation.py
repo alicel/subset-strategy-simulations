@@ -1,11 +1,11 @@
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
 from heapq import heappush, heappop
-from file_processor import FileMetadata, parse_input_files
-from visualization_base import WorkerTier
-from simulation import WorkItem, run_simulation
-from timeline_visualization import save_timeline_visualization
-from detailed_visualization import save_detailed_visualization
+from .file_processor import FileMetadata, parse_input_files
+from visualization.visualization_base import WorkerTier
+from .simulation import WorkItem, run_simulation
+from visualization.timeline_visualization import save_timeline_visualization
+from visualization.detailed_visualization import save_detailed_visualization
 import math
 import sys
 import random
@@ -613,3 +613,127 @@ class MultiTierSimulation:
                     print(f"    Thread {detail['thread_id']}: +{detail['delay_percent']:.1f}% slower")
         else:
             print("\nNo straggler workers found among analyzable workers.")
+
+    def analyze_idle_threads(self) -> Dict[str, any]:
+        """
+        Analyze workers with idle threads across all completed workers.
+        
+        Returns:
+            Dictionary containing idle thread analysis per tier
+        """
+        if not self.simulation_completed:
+            raise SimulationError("Simulation must be completed before analyzing idle threads")
+        
+        analysis = {
+            "total_workers": len(self.completed_workers),
+            "by_tier": {}
+        }
+        
+        for tier in WorkerTier:
+            tier_workers = [w for w in self.completed_workers if w.tier == tier]
+            workers_with_idle = []
+            
+            for worker in tier_workers:
+                if worker.threads and len(worker.threads) > 1:
+                    # Check for idle threads (threads that did no meaningful work)
+                    thread_completion_times = [thread.available_time for thread in worker.threads]
+                    if thread_completion_times:
+                        median_time = sorted(thread_completion_times)[len(thread_completion_times) // 2]
+                        meaningful_threshold = max(median_time * 0.1, 1.0)
+                        
+                        idle_threads = [thread for thread in worker.threads 
+                                      if thread.available_time < meaningful_threshold]
+                        
+                        if idle_threads:
+                            workers_with_idle.append({
+                                'worker': worker,
+                                'idle_thread_count': len(idle_threads),
+                                'total_threads': len(worker.threads)
+                            })
+            
+            analysis["by_tier"][tier.value] = {
+                "total_workers": len(tier_workers),
+                "workers_with_idle_threads": len(workers_with_idle),
+                "idle_thread_details": workers_with_idle
+            }
+        
+        return analysis
+
+    def get_execution_report_data(self) -> Dict[str, any]:
+        """
+        Get comprehensive execution report data for this simulation.
+        
+        Returns:
+            Dictionary containing all metrics needed for the execution report
+        """
+        if not self.simulation_completed:
+            raise SimulationError("Simulation must be completed before generating execution report")
+        
+        report_data = {
+            "simulation_config": {
+                "small_threads": self.config.small.num_threads,
+                "medium_threads": self.config.medium.num_threads,
+                "large_threads": self.config.large.num_threads,
+                "small_max_workers": self.config.small.max_workers,
+                "medium_max_workers": self.config.medium.max_workers,
+                "large_max_workers": self.config.large.max_workers,
+                "straggler_threshold_percent": self.straggler_threshold_percent,
+                "concurrent_execution": self.concurrent_execution
+            },
+            "by_tier": {}
+        }
+        
+        # Analyze idle threads
+        idle_analysis = self.analyze_idle_threads()
+        
+        for tier in WorkerTier:
+            tier_workers = [w for w in self.completed_workers if w.tier == tier]
+            
+            # Count different worker categories
+            total_workers = len(tier_workers)
+            straggler_workers = len([w for w in tier_workers if w.is_straggler_worker])
+            
+            # Workers with idle threads
+            workers_with_idle = 0
+            workers_with_both_straggler_and_idle = 0
+            
+            for worker in tier_workers:
+                if worker.threads and len(worker.threads) > 1:
+                    # Check for idle threads
+                    thread_completion_times = [thread.available_time for thread in worker.threads]
+                    if thread_completion_times:
+                        median_time = sorted(thread_completion_times)[len(thread_completion_times) // 2]
+                        meaningful_threshold = max(median_time * 0.1, 1.0)
+                        
+                        idle_threads = [thread for thread in worker.threads 
+                                      if thread.available_time < meaningful_threshold]
+                        
+                        has_idle = len(idle_threads) > 0
+                        has_straggler = worker.is_straggler_worker
+                        
+                        if has_idle:
+                            workers_with_idle += 1
+                        
+                        if has_idle and has_straggler:
+                            workers_with_both_straggler_and_idle += 1
+            
+            report_data["by_tier"][tier.value] = {
+                "total_workers": total_workers,
+                "straggler_workers": straggler_workers,
+                "workers_with_idle_threads": workers_with_idle,
+                "workers_with_both_straggler_and_idle": workers_with_both_straggler_and_idle
+            }
+        
+        return report_data
+
+    def export_execution_report_data(self, output_path: str):
+        """Export execution report data as JSON for consumption by the helper script."""
+        import json
+        
+        try:
+            report_data = self.get_execution_report_data()
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(report_data, f, indent=2)
+            print(f"Execution report data exported to {output_path}")
+        except Exception as e:
+            print(f"Warning: Failed to export execution report data: {e}")

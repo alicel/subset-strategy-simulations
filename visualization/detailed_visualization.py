@@ -2,7 +2,7 @@ from typing import List, Dict
 import plotly.express as px
 import plotly.figure_factory as ff
 import pandas as pd
-from visualization_base import Worker, WorkerTier
+from .visualization_base import Worker, WorkerTier
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import os

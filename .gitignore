@@ -5,3 +5,9 @@ venv/
 output_files/
 helper_scripts/migration_runner_config.yaml
 helper_scripts/migration_config_sample.yaml
+helper_scripts/downloadedSubsetDefinitions/
+helper_scripts/execution_report.csv
+helper_scripts/execution_report.txt
+helper_scripts/test_sequential_config.yaml
+mba/
+data/

@@ -1,7 +1,7 @@
 from typing import List, Dict
 import plotly.express as px
 import plotly.graph_objects as go
-from visualization_base import Worker, WorkerTier
+from .visualization_base import Worker, WorkerTier
 
 def create_timeline_visualization(workers: List[Worker]) -> go.Figure:
     """Create an interactive Plotly visualization of the worker timeline."""

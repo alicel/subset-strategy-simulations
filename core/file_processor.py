@@ -1,8 +1,8 @@
 from dataclasses import dataclass
 from typing import List
 import re
-from visualization_base import WorkerTier
-from simulation import WorkItem
+from visualization.visualization_base import WorkerTier
+from .simulation import WorkItem
 import os
 from pathlib import Path
 

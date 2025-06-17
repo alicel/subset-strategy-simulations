@@ -1,5 +1,5 @@
-from worker_simulation import WorkerConfig, TierConfig, MultiTierSimulation
-from file_processor import parse_input_directory
+from core.worker_simulation import WorkerConfig, TierConfig, MultiTierSimulation
+from core.file_processor import parse_input_directory
 import argparse
 import sys
 from datetime import datetime
@@ -203,6 +203,22 @@ def main():
         csv_base=csv_base,
         detailed_page_size=args.detailed_page_size if args.detailed_page_size > 0 else None
     )
+
+    # Save configuration to file
+    save_configuration(args, config, config_file, total_time, len(files))
+    
+    simulation.print_results(
+        output_file=output_file,
+        show_details=not args.summary_only, 
+        show_stragglers=not args.no_stragglers, 
+        export_csv=not args.no_csv,
+        csv_base=csv_base,
+        detailed_page_size=args.detailed_page_size if args.detailed_page_size > 0 else None
+    )
+    
+    # Export execution report data for helper script consumption
+    execution_report_path = os.path.join(output_dir, f"{output_base}_execution_report.json")
+    simulation.export_execution_report_data(execution_report_path)
 
 if __name__ == "__main__":
     main() 

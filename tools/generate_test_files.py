@@ -1,7 +1,7 @@
 from pathlib import Path
 import random
 import os
-from visualization_base import WorkerTier
+from visualization.visualization_base import WorkerTier
 
 def generate_test_files(base_dir: str, num_files: int = 50):
     """Generate test subset files with realistic data distributions.
