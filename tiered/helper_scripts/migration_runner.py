@@ -155,8 +155,8 @@ class MigrationRunner:
         
         full_command = [command] + processed_args
         
-        # Run from the parent directory so that ./mba/migration-bucket-accessor path works
-        parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        # Run from the TieredStrategySimulation root directory so that ./mba/migration-bucket-accessor path works
+        parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         
         logger.info(f"Executing command: {' '.join(full_command)}")
         logger.info(f"Working directory: {parent_dir}")
@@ -295,11 +295,11 @@ class MigrationRunner:
         output_dir = f"data/simulation_outputs/{migration_id}"
         command.extend(['--output-dir', output_dir])
         
-        # Run from the TieredStrategySimulation directory
+        # Run from the tiered directory
         parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        # Ensure we're in the TieredStrategySimulation directory, not one level above
+        # Ensure we're in the tiered directory where run_multi_tier_simulation.py is located
         if not os.path.exists(os.path.join(parent_dir, 'run_multi_tier_simulation.py')):
-            parent_dir = os.path.join(parent_dir, 'TieredStrategySimulation')
+            parent_dir = os.path.join(parent_dir, 'tiered')
         
         logger.info(f"Executing simulation command: {' '.join(command)}")
         logger.info(f"Working directory: {parent_dir}")
