@@ -670,6 +670,7 @@ class MultiTierSimulation:
             raise SimulationError("Simulation must be completed before generating execution report")
         
         report_data = {
+            "total_execution_time": self.current_time,
             "simulation_config": {
                 "small_threads": self.config.small.num_threads,
                 "medium_threads": self.config.medium.num_threads,

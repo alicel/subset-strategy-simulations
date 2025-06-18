@@ -291,13 +291,15 @@ class MigrationRunner:
                 output_name = f"{output_name}_{migration_id}"
             command.extend(['--output-name', output_name])
         
-        # Define output directory  
-        output_dir = f"../data/simulation_outputs/{migration_id}"
-        os.makedirs(output_dir, exist_ok=True)
+        # Define output directory relative to the TieredStrategySimulation directory
+        output_dir = f"data/simulation_outputs/{migration_id}"
         command.extend(['--output-dir', output_dir])
         
-        # Run from the parent directory so that paths work correctly
+        # Run from the TieredStrategySimulation directory
         parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        # Ensure we're in the TieredStrategySimulation directory, not one level above
+        if not os.path.exists(os.path.join(parent_dir, 'run_multi_tier_simulation.py')):
+            parent_dir = os.path.join(parent_dir, 'TieredStrategySimulation')
         
         logger.info(f"Executing simulation command: {' '.join(command)}")
         logger.info(f"Working directory: {parent_dir}")
@@ -428,7 +430,7 @@ class MigrationRunner:
             json_files = []
             
             try:
-                # Check the simulation output directory
+                # Check the simulation output directory (from helper_scripts directory)
                 sim_output_dir = f"../data/simulation_outputs/{migration_id}"
                 if os.path.exists(sim_output_dir):
                     for file in os.listdir(sim_output_dir):
@@ -498,25 +500,26 @@ class MigrationRunner:
                 
                 # Per-Migration Analysis
                 f.write("PER-MIGRATION ANALYSIS\n")
-                f.write("-"*50 + "\n")
-                f.write(f"{'Migration ID':<15} {'Tier':<8} {'Total':<8} {'Straggler':<12} {'Idle':<8} {'Both':<8}\n")
-                f.write(f"{'':^15} {'':^8} {'Workers':<8} {'Workers':<12} {'Workers':<8} {'S+I':<8}\n")
-                f.write("-"*65 + "\n")
+                f.write("-"*70 + "\n")
                 
                 for migration_id in sorted(execution_data["migrations"].keys()):
                     migration_data = execution_data["migrations"][migration_id]
                     by_tier = migration_data.get("by_tier", {})
+                    total_time = migration_data.get("total_execution_time", 0)
                     
-                    first_tier = True
+                    f.write(f"Migration ID: {migration_id}\n")
+                    f.write(f"Total Execution Time: {total_time:.2f} time units\n")
+                    f.write(f"{'Tier':<8} {'Total':<8} {'Straggler':<12} {'Idle':<8} {'Both':<8}\n")
+                    f.write(f"{'':^8} {'Workers':<8} {'Workers':<12} {'Workers':<8} {'S+I':<8}\n")
+                    f.write("-"*50 + "\n")
+                    
                     for tier in ['SMALL', 'MEDIUM', 'LARGE']:
                         if tier in by_tier:
                             tier_data = by_tier[tier]
-                            migration_label = migration_id if first_tier else ""
-                            f.write(f"{migration_label:<15} {tier:<8} {tier_data.get('total_workers', 0):<8} "
+                            f.write(f"{tier:<8} {tier_data.get('total_workers', 0):<8} "
                                   f"{tier_data.get('straggler_workers', 0):<12} "
                                   f"{tier_data.get('workers_with_idle_threads', 0):<8} "
                                   f"{tier_data.get('workers_with_both_straggler_and_idle', 0):<8}\n")
-                            first_tier = False
                     f.write("\n")
                 
                 # Summary Statistics
@@ -568,7 +571,7 @@ class MigrationRunner:
                 
                 # Header row
                 writer.writerow([
-                    'Migration_ID', 'Tier', 'Total_Workers', 'Straggler_Workers', 
+                    'Migration_ID', 'Total_Execution_Time', 'Tier', 'Total_Workers', 'Straggler_Workers', 
                     'Idle_Workers', 'Both_Straggler_And_Idle', 'Straggler_Percentage', 'Idle_Percentage'
                 ])
                 
@@ -576,6 +579,7 @@ class MigrationRunner:
                 for migration_id in sorted(execution_data["migrations"].keys()):
                     migration_data = execution_data["migrations"][migration_id]
                     by_tier = migration_data.get("by_tier", {})
+                    total_time = migration_data.get("total_execution_time", 0)
                     
                     for tier in ['SMALL', 'MEDIUM', 'LARGE']:
                         if tier in by_tier:
@@ -590,7 +594,7 @@ class MigrationRunner:
                             idle_pct = (idle / total * 100) if total > 0 else 0
                             
                             writer.writerow([
-                                migration_id, tier, total, straggler, idle, both,
+                                migration_id, f"{total_time:.2f}", tier, total, straggler, idle, both,
                                 f"{straggler_pct:.1f}", f"{idle_pct:.1f}"
                             ])
             
@@ -629,7 +633,7 @@ class MigrationRunner:
         
         print("\n" + "="*80)
     
-    def run(self, start_id: int, end_id: int, prefix: str = "mig"):
+    def run(self, start_id: int, end_id: int, prefix: str = "mig", execution_name: str = None, output_dir: str = "exec_output"):
         """Main execution method."""
         logger.info("Starting Migration Runner")
         
@@ -651,13 +655,18 @@ class MigrationRunner:
         # Step 4: Collect execution report data
         execution_data = self.collect_execution_report_data(migration_results)
         
-        # Step 5: Generate execution report
-        self.generate_execution_report(execution_data, "execution_report.txt")
+        # Step 5: Create output directory if it doesn't exist
+        os.makedirs(output_dir, exist_ok=True)
         
-        # Step 6: Generate execution report CSV
-        self.generate_execution_report_csv(execution_data, "execution_report.csv")
+        # Step 6: Generate execution report with custom naming
+        report_txt_path = os.path.join(output_dir, f"execution_report_{execution_name}.txt")
+        self.generate_execution_report(execution_data, report_txt_path)
         
-        # Step 7: Print results summary
+        # Step 7: Generate execution report CSV with custom naming
+        report_csv_path = os.path.join(output_dir, f"execution_report_{execution_name}.csv")
+        self.generate_execution_report_csv(execution_data, report_csv_path)
+        
+        # Step 8: Print results summary
         self.print_results_summary(migration_results)
         
         return len(failed) == 0
@@ -782,7 +791,9 @@ def main():
     parser = argparse.ArgumentParser(description='Run migration processing for a range of IDs')
     parser.add_argument('--start-id', type=int, required=True, help='Starting migration ID')
     parser.add_argument('--end-id', type=int, required=True, help='Ending migration ID')
+    parser.add_argument('--execution-name', type=str, required=True, help='Name for this execution (used in report filenames)')
     parser.add_argument('--prefix', type=str, default='mig', help='Prefix for migration IDs (default: mig)')
+    parser.add_argument('--output-dir', type=str, default='exec_output', help='Output directory for execution reports (default: exec_output)')
     parser.add_argument('--config-path', type=str, help='Path to configuration file (default: migration_runner_config.yaml)')
     parser.add_argument('--bucket', type=str, help='S3 bucket name')
     args = parser.parse_args()
@@ -794,7 +805,7 @@ def main():
         
         # Initialize and run the migration processor
         runner = MigrationRunner(config_path, args.bucket)
-        runner.run(args.start_id, args.end_id, args.prefix)
+        runner.run(args.start_id, args.end_id, args.prefix, args.execution_name, args.output_dir)
     except Exception as e:
         logger.error(f"Error: {e}")
         sys.exit(1)
