@@ -10,5 +10,6 @@ tiered/helper_scripts/execution_report.txt
 tiered/helper_scripts/test_sequential_config.yaml
 tiered/helper_scripts/exec_output/
 tiered/helper_scripts/venv/
+tiered/venv/
 mba/
 data/
