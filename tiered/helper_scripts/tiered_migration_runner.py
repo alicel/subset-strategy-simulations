@@ -189,10 +189,18 @@ class MigrationRunner:
         if not self.s3_client:
             self.s3_client = boto3.client('s3')
         
-        # S3 path structure: <migrationId>/metadata/subsets/mytieredcalc/
+        # S3 path structure: <migrationId>/metadata/subsets/<subset_calculation_label>/
         s3_config = self.config.get('s3', {})
-        path_template = s3_config.get('path_template', '{migration_id}/metadata/subsets/mytieredcalc/')
+        migration_config = self.config.get('migration', {})
+        subset_calculation_label = migration_config.get('subset_calculation_label', 'mytieredcalc')
+        
+        # Use subset_calculation_label in path template if not explicitly provided
+        default_path_template = f'{{migration_id}}/metadata/subsets/{subset_calculation_label}/'
+        path_template = s3_config.get('path_template', default_path_template)
+        
+        # Replace placeholders in path template
         s3_path = path_template.replace('{migration_id}', migration_id)
+        s3_path = s3_path.replace('{subset_calculation_label}', subset_calculation_label)
         
         # Local directory: data/downloadedSubsetDefinitions/
         # Preserve full S3 path structure starting from migration ID
@@ -696,7 +704,7 @@ def create_sample_config():
             "args": ["calc_subsets"]
         },
         "s3": {
-            "path_template": "{migration_id}/metadata/subsets/mytieredcalc/"
+            "path_template": "{migration_id}/metadata/subsets/{subset_calculation_label}/"
         },
         "simulation": {
             "worker_config": {
@@ -714,8 +722,8 @@ def create_sample_config():
                 "sequential_execution": False
             },
             "output": {
-                "output_name": "migration_simulation",
-                "output_dir": "simulation_outputs/{migration_id}",
+                "output_name": "tiered_migration_simulation",
+                "output_dir": "tiered_simulation_outputs/{migration_id}",
                 "no_csv": False,
                 "detailed_page_size": 30
             },
@@ -723,10 +731,14 @@ def create_sample_config():
         }
     }
     
-    with open("migration_config_sample.yaml", "w") as f:
+    # Create the config file in the same directory as this script (helper_scripts)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    config_file_path = os.path.join(script_dir, "migration_config_sample.yaml")
+    
+    with open(config_file_path, "w") as f:
         yaml.dump(sample_config, f, default_flow_style=False, indent=2)
     
-    print("Sample configuration file created: migration_config_sample.yaml")
+    print(f"Sample configuration file created: {config_file_path}")
     print("Please customize it according to your needs.")
     print()
     print("The following environment variables will be set from the migration config:")
@@ -789,14 +801,23 @@ def find_config_file(config_path: str = None) -> str:
 
 def main():
     parser = argparse.ArgumentParser(description='Run migration processing for a range of IDs')
-    parser.add_argument('--start-id', type=int, required=True, help='Starting migration ID')
-    parser.add_argument('--end-id', type=int, required=True, help='Ending migration ID')
-    parser.add_argument('--execution-name', type=str, required=True, help='Name for this execution (used in report filenames)')
+    parser.add_argument('--start-id', type=int, help='Starting migration ID')
+    parser.add_argument('--end-id', type=int, help='Ending migration ID')
+    parser.add_argument('--execution-name', type=str, help='Name for this execution (used in report filenames)')
     parser.add_argument('--prefix', type=str, default='mig', help='Prefix for migration IDs (default: mig)')
     parser.add_argument('--output-dir', type=str, default='exec_output', help='Output directory for execution reports (default: exec_output)')
     parser.add_argument('--config-path', type=str, help='Path to configuration file (default: migration_runner_config.yaml)')
     parser.add_argument('--bucket', type=str, help='S3 bucket name')
+    parser.add_argument('--create-sample-config', action='store_true', help='Create a sample configuration file')
     args = parser.parse_args()
+    
+    if args.create_sample_config:
+        create_sample_config()
+        return
+    
+    # Check required arguments for normal execution
+    if not args.start_id or not args.end_id or not args.execution_name:
+        parser.error("--start-id, --end-id, and --execution-name are required for normal execution")
     
     try:
         # Find the config file

@@ -4,7 +4,7 @@ This directory contains helper scripts for running the tiered strategy simulatio
 
 ## Migration Runner
 
-The `migration_runner.py` script automates the process of running the tiered strategy simulation. It handles:
+The `tiered_migration_runner.py` script automates the process of running the tiered strategy simulation. It handles:
 - AWS SSO login
 - Configuration parsing
 - Environment variable management
@@ -26,9 +26,9 @@ The `migration_runner.py` script automates the process of running the tiered str
 
 1. Generate a sample configuration file:
    ```bash
-   python3 migration_runner.py --create-sample-config
+   python3 tiered_migration_runner.py --create-sample-config
    ```
-   This will create `migration_config_sample.yaml`
+   This will create `migration_config_sample.yaml` in the `tiered/helper_scripts/` directory
 
 2. Edit `migration_config_sample.yaml` with your specific settings:
    ```yaml
@@ -59,7 +59,7 @@ The `migration_runner.py` script automates the process of running the tiered str
 
 Run the script with:
 ```bash
-python migration_runner.py
+python tiered_migration_runner.py
 ```
 
 The script will:
@@ -94,7 +94,7 @@ The script logs all operations to the console with appropriate log levels (INFO,
 
 ## Migration Runner Script
 
-The `migration_runner.py` script automates the process of running migrations and simulations.
+The `tiered_migration_runner.py` script automates the process of running migrations and simulations.
 
 ### Features
 
@@ -115,7 +115,7 @@ The `migration_runner.py` script automates the process of running migrations and
 
 2. Generate sample configuration:
    ```bash
-   python3 migration_runner.py --create-sample-config
+   python3 tiered_migration_runner.py --create-sample-config
    ```
 
 3. Customize the generated `migration_config_sample.yaml` file
@@ -124,10 +124,10 @@ The `migration_runner.py` script automates the process of running migrations and
 
 ```bash
 # Using default configuration file (migration_runner_config.yaml)
-python3 migration_runner.py --start-id 100 --end-id 200
+python3 tiered_migration_runner.py --start-id 100 --end-id 200
 
 # Using custom configuration file
-python3 migration_runner.py --config your_config.yaml --start-id 100 --end-id 200
+python3 tiered_migration_runner.py --config your_config.yaml --start-id 100 --end-id 200
 ```
 
 ### Command Line Options
@@ -385,7 +385,7 @@ downloadedSubsetDefinitions/
 
 Use `--verbose` flag for detailed logging:
 ```bash
-python3 migration_runner.py --config config.yaml --start-id 100 --end-id 100 --verbose
+python3 tiered_migration_runner.py --config config.yaml --start-id 100 --end-id 100 --verbose
 ```
 
 #### AWS SSO Issues

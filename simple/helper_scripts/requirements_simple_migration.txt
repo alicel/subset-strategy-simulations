@@ -1,0 +1,11 @@
+# Requirements for Simple Migration Runner Script
+# This script helps automate the end-to-end simple migration simulation process
+
+# AWS SDK for Python - for S3 file downloads
+boto3>=1.26.0
+
+# YAML parsing for configuration files
+PyYAML>=6.0
+
+# Standard library modules used (no additional requirements):
+# - os, sys, subprocess, json, pathlib, typing, argparse, logging, csv 

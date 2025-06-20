@@ -1,0 +1,15 @@
+# Simple Database Migration Simulation - Dependencies
+# 
+# Core visualization dependencies
+plotly>=5.18.0         # Interactive timeline and analysis visualizations
+pandas>=2.0.0          # Data processing (required by plotly)
+
+# Optional: For better performance and additional features
+# kaleido>=0.2.1       # Static image export for plotly (optional)
+# jupyter>=1.0.0       # If you want to use in Jupyter notebooks (optional)
+
+# Note: All other dependencies are part of Python standard library:
+# - typing, dataclasses, heapq (core simulation)
+# - argparse, sys, datetime, os (CLI and file handling) 
+# - re, pathlib (file processing)
+# - random (test file generation) 

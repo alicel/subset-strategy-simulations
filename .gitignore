@@ -14,3 +14,8 @@ tiered/helper_scripts/venv/
 tiered/venv/
 mba/
 data/
+simple/helper_scripts/downloadedSubsetDefinitions/
+simple/output/
+simple/venv/
+simple/helper_scripts/simple_migration_runner_config.yaml
+simple/helper_scripts/simple_migration_config_sample.yaml
