@@ -611,8 +611,8 @@ Examples:
   # Compare specific execution runs with comparison name
   python comparison_tool.py --simple-execution alice_test_run --tiered-execution test_new_5 --comparison-exec-name my_analysis
   
-  # Compare and save results to organized output directory
-  python comparison_tool.py --simple-execution alice_test_run --tiered-execution test_new_5 --comparison-exec-name my_analysis --output-csv
+  # Compare and save results to organized output directory (saves to output/simple-tiered/my_analysis/)
+  python comparison_tool.py --simple-execution alice_test_run --tiered-execution test_new_5 --comparison-exec-name my_analysis --save-reports
   
   # Alternative: specify full paths (backward compatibility)
   python comparison_tool.py --simple-path simple/output/alice_test_run --tiered-path tiered/output/test_new_5 --comparison-exec-name my_analysis
@@ -633,20 +633,20 @@ Examples:
     
     # Comparison organization
     parser.add_argument('--comparison-exec-name', '-c',
-                       help='Name for this comparison analysis (creates output/comparison/{name}/ directory)')
+                       help='Name for this comparison analysis (creates output/simple-tiered/{name}/ directory)')
     
     # Output options
     parser.add_argument('--output', '-o', 
                        help='Custom output CSV file path (overrides default organized structure)')
-    parser.add_argument('--output-csv',
+    parser.add_argument('--save-reports',
                        action='store_true',
-                       help='Generate CSV output in organized directory structure (requires --comparison-exec-name)')
+                       help='Save comparison reports (CSV + text) in organized directory structure (requires --comparison-exec-name)')
     
     args = parser.parse_args()
     
     # Validate arguments
-    if args.output_csv and not args.comparison_exec_name:
-        print("Error: --output-csv requires --comparison-exec-name")
+    if args.save_reports and not args.comparison_exec_name:
+        print("Error: --save-reports requires --comparison-exec-name")
         sys.exit(1)
     
     # Determine paths and execution names based on arguments
@@ -701,9 +701,9 @@ Examples:
         if args.output:
             # Custom output path specified
             analyzer.save_comparison_csv(comparisons, args.output, simple_exec_name, tiered_exec_name)
-        elif args.output_csv and args.comparison_exec_name:
-            # Generate organized output
-            output_dir = f"output/{args.comparison_exec_name}"
+        elif args.save_reports and args.comparison_exec_name:
+            # Generate organized output under simple-tiered directory
+            output_dir = f"output/simple-tiered/{args.comparison_exec_name}"
             os.makedirs(output_dir, exist_ok=True)
             
             # Generate default filenames
@@ -714,7 +714,7 @@ Examples:
             analyzer.save_comparison_csv(comparisons, csv_file, simple_exec_name, tiered_exec_name)
             analyzer.save_comparison_report(comparisons, txt_file, simple_exec_name, tiered_exec_name, simple_only, tiered_only)
             
-            print(f"Comparison analysis saved to: {output_dir}/")
+            print(f"Simple vs Tiered comparison analysis saved to: {output_dir}/")
         
     except Exception as e:
         print(f"Error: {e}")
