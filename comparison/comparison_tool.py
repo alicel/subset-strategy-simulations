@@ -450,10 +450,10 @@ class ComparisonAnalyzer:
             # Header
             writer.writerow([
                 'Migration_ID',
-                'Simple_Execution_Time', 'Tiered_Execution_Time', 'Execution_Time_Ratio_T_S', 'Execution_Time_Ratio_S_T',
-                'Simple_Workers', 'Tiered_Workers', 'Worker_Ratio_T_S', 'Worker_Ratio_S_T',
-                'Simple_CPUs', 'Tiered_CPUs', 'CPU_Ratio_T_S', 'CPU_Ratio_S_T',
-                'Simple_CPU_Time', 'Tiered_CPU_Time', 'CPU_Time_Ratio_T_S', 'CPU_Time_Ratio_S_T',
+                'Simple_Execution_Time', 'Tiered_Execution_Time', 'Execution_Time_Ratio_S_T', 'Execution_Time_Ratio_T_S',
+                'Simple_Workers', 'Tiered_Workers', 'Worker_Ratio_S_T', 'Worker_Ratio_T_S',
+                'Simple_CPUs', 'Tiered_CPUs', 'CPU_Ratio_S_T', 'CPU_Ratio_T_S',
+                'Simple_CPU_Time', 'Tiered_CPU_Time', 'CPU_Time_Ratio_S_T', 'CPU_Time_Ratio_T_S',
                 'Tiered_Small_Workers', 'Tiered_Medium_Workers', 'Tiered_Large_Workers',
                 'Tiered_Small_CPUs', 'Tiered_Medium_CPUs', 'Tiered_Large_CPUs'
             ])
@@ -466,13 +466,13 @@ class ComparisonAnalyzer:
                 writer.writerow([
                     comp.migration_id,
                     f"{simple.total_execution_time:.2f}", f"{tiered.total_execution_time:.2f}", 
-                    f"{comp.execution_time_ratio:.4f}", f"{comp.execution_time_ratio_inverse:.4f}",
+                    f"{comp.execution_time_ratio_inverse:.4f}", f"{comp.execution_time_ratio:.4f}",
                     simple.total_workers, tiered.total_workers, 
-                    f"{comp.worker_count_ratio:.4f}", f"{comp.worker_count_ratio_inverse:.4f}",
+                    f"{comp.worker_count_ratio_inverse:.4f}", f"{comp.worker_count_ratio:.4f}",
                     simple.total_cpus, tiered.total_cpus, 
-                    f"{comp.cpu_count_ratio:.4f}", f"{comp.cpu_count_ratio_inverse:.4f}",
+                    f"{comp.cpu_count_ratio_inverse:.4f}", f"{comp.cpu_count_ratio:.4f}",
                     f"{simple.cpu_time:.2f}", f"{tiered.cpu_time:.2f}", 
-                    f"{comp.cpu_time_ratio:.4f}", f"{comp.cpu_time_ratio_inverse:.4f}",
+                    f"{comp.cpu_time_ratio_inverse:.4f}", f"{comp.cpu_time_ratio:.4f}",
                     tiered.workers_by_tier.get('SMALL', 0),
                     tiered.workers_by_tier.get('MEDIUM', 0),
                     tiered.workers_by_tier.get('LARGE', 0),
@@ -515,7 +515,7 @@ class ComparisonAnalyzer:
         # Header
         lines.append("")
         lines.append(f"{'Migration':<12} {'Execution Time':<35} {'Workers':<30} {'CPUs':<30} {'CPU Time':<35}")
-        lines.append(f"{'ID':<12} {'Simple':<10} {'Tiered':<10} {'T/S':<5} {'S/T':<5} {'Simple':<8} {'Tiered':<8} {'T/S':<5} {'S/T':<5} {'Simple':<8} {'Tiered':<8} {'T/S':<5} {'S/T':<5} {'Simple':<10} {'Tiered':<10} {'T/S':<5} {'S/T':<5}")
+        lines.append(f"{'ID':<12} {'Simple':<10} {'Tiered':<10} {'S/T':<5} {'T/S':<5} {'Simple':<8} {'Tiered':<8} {'S/T':<5} {'T/S':<5} {'Simple':<8} {'Tiered':<8} {'S/T':<5} {'T/S':<5} {'Simple':<10} {'Tiered':<10} {'S/T':<5} {'T/S':<5}")
         lines.append("-" * 125)
         
         # Data rows
@@ -526,24 +526,24 @@ class ComparisonAnalyzer:
             # Format large numbers
             simple_time = self._format_time(simple.total_execution_time)
             tiered_time = self._format_time(tiered.total_execution_time)
-            time_ratio_ts = f"{comp.execution_time_ratio:.2f}"
             time_ratio_st = f"{comp.execution_time_ratio_inverse:.2f}"
+            time_ratio_ts = f"{comp.execution_time_ratio:.2f}"
             
             simple_cpu_time = self._format_time(simple.cpu_time)
             tiered_cpu_time = self._format_time(tiered.cpu_time)
-            cpu_time_ratio_ts = f"{comp.cpu_time_ratio:.2f}"
             cpu_time_ratio_st = f"{comp.cpu_time_ratio_inverse:.2f}"
+            cpu_time_ratio_ts = f"{comp.cpu_time_ratio:.2f}"
             
-            worker_ratio_ts = f"{comp.worker_count_ratio:.2f}"
             worker_ratio_st = f"{comp.worker_count_ratio_inverse:.2f}"
+            worker_ratio_ts = f"{comp.worker_count_ratio:.2f}"
             
-            cpu_ratio_ts = f"{comp.cpu_count_ratio:.2f}"
             cpu_ratio_st = f"{comp.cpu_count_ratio_inverse:.2f}"
+            cpu_ratio_ts = f"{comp.cpu_count_ratio:.2f}"
             
-            lines.append(f"{comp.migration_id:<12} {simple_time:<10} {tiered_time:<10} {time_ratio_ts:<5} {time_ratio_st:<5} "
-                        f"{simple.total_workers:<8} {tiered.total_workers:<8} {worker_ratio_ts:<5} {worker_ratio_st:<5} "
-                        f"{simple.total_cpus:<8} {tiered.total_cpus:<8} {cpu_ratio_ts:<5} {cpu_ratio_st:<5} "
-                        f"{simple_cpu_time:<10} {tiered_cpu_time:<10} {cpu_time_ratio_ts:<5} {cpu_time_ratio_st:<5}")
+            lines.append(f"{comp.migration_id:<12} {simple_time:<10} {tiered_time:<10} {time_ratio_st:<5} {time_ratio_ts:<5} "
+                        f"{simple.total_workers:<8} {tiered.total_workers:<8} {worker_ratio_st:<5} {worker_ratio_ts:<5} "
+                        f"{simple.total_cpus:<8} {tiered.total_cpus:<8} {cpu_ratio_st:<5} {cpu_ratio_ts:<5} "
+                        f"{simple_cpu_time:<10} {tiered_cpu_time:<10} {cpu_time_ratio_st:<5} {cpu_time_ratio_ts:<5}")
         
         # Summary statistics
         lines.append("")
@@ -567,29 +567,29 @@ class ComparisonAnalyzer:
         lines.append("Total Execution Time:")
         lines.append(f"  Simple:      {self._format_time(total_simple_time)}")
         lines.append(f"  Tiered:      {self._format_time(total_tiered_time)}")
-        lines.append(f"  Tiered/Simple: {total_tiered_time/total_simple_time:.2f} (efficiency: <1.0 = tiered faster)")
         lines.append(f"  Simple/Tiered: {total_simple_time/total_tiered_time:.2f} (speedup: >1.0 = tiered faster)")
+        lines.append(f"  Tiered/Simple: {total_tiered_time/total_simple_time:.2f} (efficiency: <1.0 = tiered faster)")
         
         lines.append("")
         lines.append("Total Workers:")
         lines.append(f"  Simple:      {total_simple_workers}")
         lines.append(f"  Tiered:      {total_tiered_workers}")
-        lines.append(f"  Tiered/Simple: {total_tiered_workers/total_simple_workers:.2f}")
         lines.append(f"  Simple/Tiered: {total_simple_workers/total_tiered_workers:.2f}")
+        lines.append(f"  Tiered/Simple: {total_tiered_workers/total_simple_workers:.2f}")
         
         lines.append("")
         lines.append("Total CPUs:")
         lines.append(f"  Simple:      {total_simple_cpus}")
         lines.append(f"  Tiered:      {total_tiered_cpus}")
-        lines.append(f"  Tiered/Simple: {total_tiered_cpus/total_simple_cpus:.2f}")
         lines.append(f"  Simple/Tiered: {total_simple_cpus/total_tiered_cpus:.2f}")
+        lines.append(f"  Tiered/Simple: {total_tiered_cpus/total_simple_cpus:.2f}")
         
         lines.append("")
         lines.append("Total CPU Time:")
         lines.append(f"  Simple:      {self._format_time(total_simple_cpu_time)}")
         lines.append(f"  Tiered:      {self._format_time(total_tiered_cpu_time)}")
-        lines.append(f"  Tiered/Simple: {total_tiered_cpu_time/total_simple_cpu_time:.2f}")
         lines.append(f"  Simple/Tiered: {total_simple_cpu_time/total_tiered_cpu_time:.2f}")
+        lines.append(f"  Tiered/Simple: {total_tiered_cpu_time/total_simple_cpu_time:.2f}")
         
         return "\n".join(lines)
     
@@ -602,17 +602,247 @@ class ComparisonAnalyzer:
         
         print(f"Tabular comparison report saved to: {output_file}")
 
+    def generate_html_report(self, comparisons: List[ComparisonResult], simple_exec_name: str = None, tiered_exec_name: str = None, simple_only: Set[str] = None, tiered_only: Set[str] = None) -> str:
+        """Generate an HTML comparison report for browser viewing."""
+        if not comparisons:
+            return "<html><body><h1>No comparisons to display.</h1></body></html>"
+        
+        # Calculate aggregate totals for summary
+        total_simple_time = sum(c.simple_metrics.total_execution_time for c in comparisons)
+        total_tiered_time = sum(c.tiered_metrics.total_execution_time for c in comparisons)
+        total_simple_workers = sum(c.simple_metrics.total_workers for c in comparisons)
+        total_tiered_workers = sum(c.tiered_metrics.total_workers for c in comparisons)
+        total_simple_cpus = sum(c.simple_metrics.total_cpus for c in comparisons)
+        total_tiered_cpus = sum(c.tiered_metrics.total_cpus for c in comparisons)
+        total_simple_cpu_time = sum(c.simple_metrics.cpu_time for c in comparisons)
+        total_tiered_cpu_time = sum(c.tiered_metrics.cpu_time for c in comparisons)
+        
+        # Generate timestamp
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Simple vs Tiered Migration Comparison</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 40px; background-color: #fafafa; }}
+        h1, h2 {{ color: #333; }}
+        .header {{ background-color: #e3f2fd; padding: 20px; border-radius: 8px; margin-bottom: 20px; }}
+        .config {{ background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin-bottom: 20px; }}
+        .summary {{ background-color: #e8f4f8; padding: 15px; border-radius: 5px; margin-bottom: 20px; }}
+        .aggregate {{ background-color: #fff3e0; padding: 15px; border-radius: 5px; margin-bottom: 20px; }}
+        
+        table {{ border-collapse: collapse; width: 100%; margin-bottom: 20px; background-color: white; }}
+        th, td {{ border: 1px solid #ddd; padding: 10px; text-align: left; }}
+        th {{ background-color: #f2f2f2; font-weight: bold; }}
+        tr:nth-child(even) {{ background-color: #f9f9f9; }}
+        tr:hover {{ background-color: #f0f0f0; }}
+        
+        .migration-details {{ margin-top: 20px; }}
+        .best-time {{ background-color: #c8e6c9 !important; font-weight: bold; }}
+        .best-ratio {{ background-color: #c8e6c9 !important; font-weight: bold; }}
+        
+        .metric-section {{ margin-bottom: 30px; }}
+        .exclusive-migrations {{ background-color: #fff8e1; padding: 15px; border-radius: 5px; margin-bottom: 20px; }}
+        
+        .ratio-header {{ font-size: 0.9em; }}
+        .number {{ text-align: right; }}
+    </style>
+</head>
+<body>
+<div class="header">
+    <h1>Simple vs Tiered Migration Simulation Comparison</h1>
+    <p><strong>Generated:</strong> {timestamp}</p>
+</div>
+
+<div class="config">
+    <h2>Comparison Details</h2>"""
+        
+        if simple_exec_name and tiered_exec_name:
+            html += f"""
+    <p><strong>Simple Execution:</strong> {simple_exec_name}</p>
+    <p><strong>Tiered Execution:</strong> {tiered_exec_name}</p>
+    <p><strong>Common Migrations:</strong> {len(comparisons)}</p>"""
+        else:
+            html += f"""
+    <p><strong>Common Migrations:</strong> {len(comparisons)}</p>"""
+        
+        if simple_only or tiered_only:
+            html += f"""</div>
+
+<div class="exclusive-migrations">
+    <h2>Exclusive Migrations</h2>"""
+            if simple_only:
+                html += f"""
+    <p><strong>Simple Only ({len(simple_only)}):</strong> {', '.join(sorted(simple_only))}</p>"""
+            if tiered_only:
+                html += f"""
+    <p><strong>Tiered Only ({len(tiered_only)}):</strong> {', '.join(sorted(tiered_only))}</p>"""
+        
+        html += f"""</div>
+
+<div class="summary">
+    <h2>Aggregate Analysis</h2>
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px;">
+        <div>
+            <h3>Total Execution Time</h3>
+            <p><strong>Simple:</strong> {self._format_time(total_simple_time)}</p>
+            <p><strong>Tiered:</strong> {self._format_time(total_tiered_time)}</p>
+                         <p><strong>Simple/Tiered:</strong> {total_simple_time/total_tiered_time:.2f} (>1.0 = tiered faster)</p>
+             <p><strong>Tiered/Simple:</strong> {total_tiered_time/total_simple_time:.2f} (<1.0 = tiered faster)</p>
+        </div>
+        <div>
+            <h3>Total Workers</h3>
+            <p><strong>Simple:</strong> {total_simple_workers:,}</p>
+            <p><strong>Tiered:</strong> {total_tiered_workers:,}</p>
+            <p><strong>Simple/Tiered:</strong> {total_simple_workers/total_tiered_workers:.2f}</p>
+            <p><strong>Tiered/Simple:</strong> {total_tiered_workers/total_simple_workers:.2f}</p>
+        </div>
+        <div>
+            <h3>Total CPUs</h3>
+            <p><strong>Simple:</strong> {total_simple_cpus:,}</p>
+            <p><strong>Tiered:</strong> {total_tiered_cpus:,}</p>
+            <p><strong>Simple/Tiered:</strong> {total_simple_cpus/total_tiered_cpus:.2f}</p>
+            <p><strong>Tiered/Simple:</strong> {total_tiered_cpus/total_simple_cpus:.2f}</p>
+        </div>
+        <div>
+            <h3>Total CPU Time</h3>
+            <p><strong>Simple:</strong> {self._format_time(total_simple_cpu_time)}</p>
+            <p><strong>Tiered:</strong> {self._format_time(total_tiered_cpu_time)}</p>
+            <p><strong>Simple/Tiered:</strong> {total_simple_cpu_time/total_tiered_cpu_time:.2f}</p>
+            <p><strong>Tiered/Simple:</strong> {total_tiered_cpu_time/total_simple_cpu_time:.2f}</p>
+        </div>
+    </div>
+</div>
+
+<div class="migration-details">
+    <h2>Per-Migration Comparison</h2>
+    <table>
+        <thead>
+            <tr>
+                <th rowspan="2">Migration ID</th>
+                <th colspan="4">Execution Time</th>
+                <th colspan="4">Workers</th>
+                <th colspan="4">CPUs</th>
+                <th colspan="4">CPU Time</th>
+                <th colspan="6">Tiered Worker Distribution</th>
+            </tr>
+            <tr>
+                <th>Simple</th>
+                <th>Tiered</th>
+                <th class="ratio-header">S/T</th>
+                <th class="ratio-header">T/S</th>
+                <th>Simple</th>
+                <th>Tiered</th>
+                <th class="ratio-header">S/T</th>
+                <th class="ratio-header">T/S</th>
+                <th>Simple</th>
+                <th>Tiered</th>
+                <th class="ratio-header">S/T</th>
+                <th class="ratio-header">T/S</th>
+                <th>Simple</th>
+                <th>Tiered</th>
+                <th class="ratio-header">S/T</th>
+                <th class="ratio-header">T/S</th>
+                <th>Small</th>
+                <th>Medium</th>
+                <th>Large</th>
+                <th>Small CPUs</th>
+                <th>Med CPUs</th>
+                <th>Large CPUs</th>
+            </tr>
+        </thead>
+        <tbody>"""
+        
+        # Process each comparison and determine best values for highlighting
+        for comp in comparisons:
+            simple = comp.simple_metrics
+            tiered = comp.tiered_metrics
+            
+            # Determine best execution time and ratio
+            best_exec_time = "simple" if simple.total_execution_time <= tiered.total_execution_time else "tiered"
+            best_exec_ratio = "ts" if comp.execution_time_ratio <= comp.execution_time_ratio_inverse else "st"
+            
+            # Determine best CPU time and ratio
+            best_cpu_time = "simple" if simple.cpu_time <= tiered.cpu_time else "tiered"
+            best_cpu_ratio = "ts" if comp.cpu_time_ratio <= comp.cpu_time_ratio_inverse else "st"
+            
+            # Format values
+            simple_time_str = self._format_time(simple.total_execution_time)
+            tiered_time_str = self._format_time(tiered.total_execution_time)
+            simple_cpu_time_str = self._format_time(simple.cpu_time)
+            tiered_cpu_time_str = self._format_time(tiered.cpu_time)
+            
+            html += f"""
+            <tr>
+                <td><strong>{comp.migration_id}</strong></td>
+                <td class="number {'best-time' if best_exec_time == 'simple' else ''}">{simple_time_str}</td>
+                <td class="number {'best-time' if best_exec_time == 'tiered' else ''}">{tiered_time_str}</td>
+                <td class="number {'best-ratio' if best_exec_ratio == 'st' else ''}">{comp.execution_time_ratio_inverse:.2f}</td>
+                <td class="number {'best-ratio' if best_exec_ratio == 'ts' else ''}">{comp.execution_time_ratio:.2f}</td>
+                <td class="number">{simple.total_workers:,}</td>
+                <td class="number">{tiered.total_workers:,}</td>
+                <td class="number">{comp.worker_count_ratio_inverse:.2f}</td>
+                <td class="number">{comp.worker_count_ratio:.2f}</td>
+                <td class="number">{simple.total_cpus:,}</td>
+                <td class="number">{tiered.total_cpus:,}</td>
+                <td class="number">{comp.cpu_count_ratio_inverse:.2f}</td>
+                <td class="number">{comp.cpu_count_ratio:.2f}</td>
+                <td class="number {'best-time' if best_cpu_time == 'simple' else ''}">{simple_cpu_time_str}</td>
+                <td class="number {'best-time' if best_cpu_time == 'tiered' else ''}">{tiered_cpu_time_str}</td>
+                <td class="number {'best-ratio' if best_cpu_ratio == 'st' else ''}">{comp.cpu_time_ratio_inverse:.2f}</td>
+                <td class="number {'best-ratio' if best_cpu_ratio == 'ts' else ''}">{comp.cpu_time_ratio:.2f}</td>
+                <td class="number">{tiered.workers_by_tier.get('SMALL', 0):,}</td>
+                <td class="number">{tiered.workers_by_tier.get('MEDIUM', 0):,}</td>
+                <td class="number">{tiered.workers_by_tier.get('LARGE', 0):,}</td>
+                <td class="number">{tiered.cpus_by_tier.get('SMALL', 0):,}</td>
+                <td class="number">{tiered.cpus_by_tier.get('MEDIUM', 0):,}</td>
+                <td class="number">{tiered.cpus_by_tier.get('LARGE', 0):,}</td>
+            </tr>"""
+        
+        html += """
+        </tbody>
+    </table>
+</div>
+
+<div class="aggregate">
+    <h2>Legend</h2>
+    <p><span style="background-color: #c8e6c9; padding: 2px 6px; border-radius: 3px;">Green highlighting</span> indicates the best (lowest) execution time, CPU time, and their corresponding best ratios for each migration.</p>
+    <p><strong>Ratio Interpretation:</strong></p>
+    <ul>
+        <li><strong>S/T > 1.0:</strong> Simple took longer (Tiered is faster)</li>
+        <li><strong>T/S < 1.0:</strong> Tiered took less time (Tiered is faster)</li>
+        <li><strong>Higher S/T or Lower T/S = Better Tiered Performance</strong></li>
+    </ul>
+</div>
+
+</body>
+</html>"""
+        
+        return html
+
+    def save_html_report(self, comparisons: List[ComparisonResult], output_file: str, simple_exec_name: str = None, tiered_exec_name: str = None, simple_only: Set[str] = None, tiered_only: Set[str] = None):
+        """Save the HTML comparison report to a file."""
+        html_content = self.generate_html_report(comparisons, simple_exec_name, tiered_exec_name, simple_only, tiered_only)
+        
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+        
+        print(f"HTML comparison report saved to: {output_file}")
+        print(f"Open in browser: file://{os.path.abspath(output_file)}")
+
 def main():
     parser = argparse.ArgumentParser(
         description="Compare Simple vs Tiered Migration Simulation Results",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Compare specific execution runs with comparison name
+  # Compare and save results to organized output directory (default - saves to output/simple-tiered/my_analysis/)
   python comparison_tool.py --simple-execution alice_test_run --tiered-execution test_new_5 --comparison-exec-name my_analysis
   
-  # Compare and save results to organized output directory (saves to output/simple-tiered/my_analysis/)
-  python comparison_tool.py --simple-execution alice_test_run --tiered-execution test_new_5 --comparison-exec-name my_analysis --save-reports
+  # Compare without saving reports (console output only)
+  python comparison_tool.py --simple-execution alice_test_run --tiered-execution test_new_5 --comparison-exec-name my_analysis --omit-reports
   
   # Alternative: specify full paths (backward compatibility)
   python comparison_tool.py --simple-path simple/output/alice_test_run --tiered-path tiered/output/test_new_5 --comparison-exec-name my_analysis
@@ -636,18 +866,13 @@ Examples:
                        help='Name for this comparison analysis (creates output/simple-tiered/{name}/ directory)')
     
     # Output options
-    parser.add_argument('--output', '-o', 
-                       help='Custom output CSV file path (overrides default organized structure)')
-    parser.add_argument('--save-reports',
+    parser.add_argument('--omit-reports',
                        action='store_true',
-                       help='Save comparison reports (CSV + text) in organized directory structure (requires --comparison-exec-name)')
+                       help='Skip saving organized comparison reports (only show console output)')
     
     args = parser.parse_args()
     
-    # Validate arguments
-    if args.save_reports and not args.comparison_exec_name:
-        print("Error: --save-reports requires --comparison-exec-name")
-        sys.exit(1)
+    # No validation needed - organized reports are created automatically when comparison name is provided
     
     # Determine paths and execution names based on arguments
     simple_run_path = None
@@ -698,21 +923,20 @@ Examples:
         analyzer.print_comparison_summary(comparisons, simple_exec_name, tiered_exec_name, simple_only, tiered_only)
         
         # Handle output file generation
-        if args.output:
-            # Custom output path specified
-            analyzer.save_comparison_csv(comparisons, args.output, simple_exec_name, tiered_exec_name)
-        elif args.save_reports and args.comparison_exec_name:
-            # Generate organized output under simple-tiered directory
+        if args.comparison_exec_name and not args.omit_reports:
+            # Generate organized output under simple-tiered directory (default behavior)
             output_dir = f"output/simple-tiered/{args.comparison_exec_name}"
             os.makedirs(output_dir, exist_ok=True)
             
             # Generate default filenames
             csv_file = f"{output_dir}/comparison_report_{args.comparison_exec_name}.csv"
             txt_file = f"{output_dir}/comparison_summary_{args.comparison_exec_name}.txt"
+            html_file = f"{output_dir}/comparison_report_{args.comparison_exec_name}.html"
             
-            # Save both tabular and CSV reports
+            # Save all report formats
             analyzer.save_comparison_csv(comparisons, csv_file, simple_exec_name, tiered_exec_name)
             analyzer.save_comparison_report(comparisons, txt_file, simple_exec_name, tiered_exec_name, simple_only, tiered_only)
+            analyzer.save_html_report(comparisons, html_file, simple_exec_name, tiered_exec_name, simple_only, tiered_only)
             
             print(f"Simple vs Tiered comparison analysis saved to: {output_dir}/")
         
