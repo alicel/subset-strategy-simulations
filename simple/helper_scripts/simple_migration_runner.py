@@ -164,7 +164,9 @@ class SimpleMigrationRunner:
         full_command = [command] + processed_args
         
         # Run from the TieredStrategySimulation root directory so that ./mba/migration-bucket-accessor path works
-        parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        script_dir = os.path.dirname(os.path.abspath(__file__))  # helper_scripts directory
+        simple_dir = os.path.dirname(script_dir)  # simple directory
+        parent_dir = os.path.dirname(simple_dir)  # TieredStrategySimulation directory
         
         logger.info(f"Executing command: {' '.join(full_command)}")
         logger.info(f"Working directory: {parent_dir}")
@@ -190,7 +192,7 @@ class SimpleMigrationRunner:
                 logger.error(f"Standard output: {e.stdout}")
             return False
     
-    def download_from_s3(self, migration_id: str) -> Optional[str]:
+    def download_from_s3(self, migration_id: str, execution_name: str = None) -> Optional[str]:
         """Download results from S3 for a specific migration ID."""
         logger.info(f"Downloading results from S3 for migration ID: {migration_id}")
         
@@ -211,8 +213,18 @@ class SimpleMigrationRunner:
         s3_path = s3_path.replace('{subset_calculation_label}', subset_calculation_label)
         
         # Local directory: simple/helper_scripts/downloadedSubsetDefinitions/
-        # Since we run from project root, need to specify the full path to simple directory
-        base_download_dir = "simple/helper_scripts/downloadedSubsetDefinitions"
+        # Use absolute path to ensure we always download to simple directory
+        script_dir = os.path.dirname(os.path.abspath(__file__))  # helper_scripts directory
+        simple_dir = os.path.dirname(script_dir)  # simple directory
+        
+        # Organize by execution name if provided
+        if execution_name:
+            # Use new structure: simple/helper_scripts/downloadedSubsetDefinitions/{execution_name}/
+            base_download_dir = os.path.join(simple_dir, "helper_scripts", "downloadedSubsetDefinitions", execution_name)
+        else:
+            # Fallback to old structure for backward compatibility
+            base_download_dir = os.path.join(simple_dir, "helper_scripts", "downloadedSubsetDefinitions")
+        
         os.makedirs(base_download_dir, exist_ok=True)
         
         # Full local path maintaining S3 structure
@@ -244,9 +256,9 @@ class SimpleMigrationRunner:
                 logger.debug(f"Downloaded: {s3_key} -> {local_file_path}")
             
             logger.info(f"Downloaded {downloaded_count} files from S3")
-            # local_dir is now "simple/helper_scripts/downloadedSubsetDefinitions/mig100"
-            # We need to return "helper_scripts/downloadedSubsetDefinitions/mig100" for the simulation
-            return_path = local_dir.replace("simple/", "")
+            # local_dir is now an absolute path like "/path/to/simple/helper_scripts/downloadedSubsetDefinitions/{execution_name}/mig100"
+            # We need to return the path relative to simple directory where simulation runs
+            return_path = os.path.relpath(local_dir, simple_dir)
             # Return path relative to simple directory where simulation runs
             return return_path
         except Exception as e:
@@ -286,9 +298,13 @@ class SimpleMigrationRunner:
         # Also create migration_exec_results directory for config files
         migration_exec_dir = plots_dir.replace('/plots', '/migration_exec_results')
         
-        # Create both directories relative to simple directory
-        full_plots_dir = os.path.join("simple", plots_dir)
-        full_exec_dir = os.path.join("simple", migration_exec_dir)
+        # Create both directories using absolute paths
+        # Get simple directory path
+        script_dir = os.path.dirname(os.path.abspath(__file__))  # helper_scripts directory
+        simple_dir = os.path.dirname(script_dir)  # simple directory
+        
+        full_plots_dir = os.path.join(simple_dir, plots_dir)
+        full_exec_dir = os.path.join(simple_dir, migration_exec_dir)
         os.makedirs(full_plots_dir, exist_ok=True)
         os.makedirs(full_exec_dir, exist_ok=True)
         
@@ -337,7 +353,7 @@ class SimpleMigrationRunner:
                 
                 if viz_config.get('plotly_comprehensive', False):
                     output_files['plotly_details'] = f"{plotly_base}_details.html"
-                    output_files['plotly_distribution'] = f"{plotly_base}_distribution.html"
+                    # output_files['plotly_distribution'] = f"{plotly_base}_distribution.html"  # Disabled per request
             
             return True, output_files
             
@@ -348,7 +364,7 @@ class SimpleMigrationRunner:
                 logger.error(f"Standard output: {e.stdout}")
             return False, {}
     
-    def process_migration_range(self, start_id: int, end_id: int, prefix: str = "mig"):
+    def process_migration_range(self, start_id: int, end_id: int, prefix: str = "mig", execution_name: str = None):
         """Process a range of migration IDs."""
         successful = []
         failed = []
@@ -369,7 +385,7 @@ class SimpleMigrationRunner:
                     continue
                 
                 # Step 3: Download from S3
-                download_dir = self.download_from_s3(migration_id)
+                download_dir = self.download_from_s3(migration_id, execution_name)
                 if not download_dir:
                     logger.error(f"S3 download failed for {migration_id}, skipping...")
                     failed.append(migration_id)
@@ -483,8 +499,9 @@ class SimpleMigrationRunner:
             if 'plotly_details' in output_files:
                 print(f"  file://{output_files['plotly_details']}")
                 
-            if 'plotly_distribution' in output_files:
-                print(f"  file://{output_files['plotly_distribution']}")
+            # Distribution visualization has been disabled per request
+            # if 'plotly_distribution' in output_files:
+            #     print(f"  file://{output_files['plotly_distribution']}")
         
         print("\n" + "="*80)
     
@@ -495,9 +512,11 @@ class SimpleMigrationRunner:
         # Store execution name for use in subdirectory creation
         self._current_execution_name = execution_name
         
-        # Set default output directory with execution name
+        # Set default output directory with execution name using absolute path
         if output_dir is None:
-            output_dir = f"simple/output/{execution_name}/exec_reports"
+            script_dir = os.path.dirname(os.path.abspath(__file__))  # helper_scripts directory
+            simple_dir = os.path.dirname(script_dir)  # simple directory
+            output_dir = os.path.join(simple_dir, "output", execution_name, "exec_reports")
         
         # Step 1: AWS SSO Login
         if not self.aws_sso_login():
@@ -512,7 +531,7 @@ class SimpleMigrationRunner:
             return False
         
         # Step 3: Process migration range (environment variables are set per migration)
-        successful, failed, migration_results = self.process_migration_range(start_id, end_id, prefix)
+        successful, failed, migration_results = self.process_migration_range(start_id, end_id, prefix, execution_name)
         
         # Step 4: Collect execution report data
         execution_data = self.collect_execution_report_data(migration_results)

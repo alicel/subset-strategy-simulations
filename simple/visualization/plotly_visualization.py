@@ -296,7 +296,7 @@ def save_comprehensive_visualization(workers: List[SimpleWorker], output_path: s
     # Create all visualizations
     timeline_fig = create_timeline_visualization(workers)
     details_fig = create_worker_details_visualization(workers)
-    distribution_fig = create_work_distribution_visualization(workers)
+    # Note: distribution visualization is no longer generated as requested
     
     # Save timeline as primary visualization
     timeline_fig.write_html(output_path)
@@ -304,9 +304,9 @@ def save_comprehensive_visualization(workers: List[SimpleWorker], output_path: s
     # Save additional visualizations with different names
     base_path = output_path.replace('.html', '')
     details_fig.write_html(f"{base_path}_details.html")
-    distribution_fig.write_html(f"{base_path}_distribution.html")
+    # distribution_fig.write_html(f"{base_path}_distribution.html")  # Commented out to skip distribution
     
     print(f"Comprehensive visualizations saved:")
     print(f"  - Timeline: {output_path}")
     print(f"  - Details: {base_path}_details.html")
-    print(f"  - Distribution: {base_path}_distribution.html") 
+    # print(f"  - Distribution: {base_path}_distribution.html")  # Commented out 

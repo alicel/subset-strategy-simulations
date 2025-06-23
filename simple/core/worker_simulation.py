@@ -225,6 +225,61 @@ class SimpleSimulation:
         
         print("\n" + "="*60)
     
+    def export_data_to_csv(self, base_filename: str = "simple_simulation_data"):
+        """Export simulation data to CSV files for automated analysis."""
+        import csv
+        
+        # Export worker-level data (matching tiered format)
+        worker_file = f"{base_filename}_workers.csv"
+        with open(worker_file, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            # Header row - matching tiered format
+            writer.writerow([
+                'Worker_ID', 'Tier', 'Start_Time', 'End_Time', 'Duration', 
+                'SSTable_Count', 'Data_Size_GB', 'Is_Straggler_Worker'
+            ])
+            
+            # Worker data rows
+            for worker in self.completed_workers:
+                duration = (worker.completion_time or worker.start_time) - worker.start_time
+                sstable_count = len(worker.simulator.processed_items) if worker.simulator else 0
+                data_size_gb = worker.file.data_size / (1024*1024*1024) if worker.file else 0.0
+                
+                writer.writerow([
+                    worker.worker_id,
+                    'UNIVERSAL',  # Simple strategy uses universal tier
+                    f"{worker.start_time:.2f}",
+                    f"{worker.completion_time or worker.start_time:.2f}",
+                    f"{duration:.2f}",
+                    sstable_count,
+                    f"{data_size_gb:.2f}",
+                    False  # Simple simulation doesn't track stragglers
+                ])
+        
+        # Export summary statistics
+        summary_file = f"{base_filename}_summary.csv"
+        with open(summary_file, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            
+            # Overall simulation metrics
+            writer.writerow(['Metric', 'Value'])
+            writer.writerow(['Total_Simulation_Time', f"{self.current_time:.2f}"])
+            writer.writerow(['Total_Workers', len(self.completed_workers)])
+            writer.writerow(['Strategy', 'SIMPLE'])
+            writer.writerow(['Threads_Per_Worker', 1])  # Simple strategy uses 1 thread per worker
+            writer.writerow(['Total_CPUs', len(self.completed_workers)])  # 1 CPU per worker
+            
+            # Calculate total CPU time from actual worker durations
+            total_cpu_time = sum(
+                ((w.completion_time or w.start_time) - w.start_time) 
+                for w in self.completed_workers
+            )
+            writer.writerow(['Total_CPU_Time', f"{total_cpu_time:.2f}"])
+        
+        print(f"\nData exported to CSV files:")
+        print(f"- Worker data: {worker_file}")
+        print(f"- Summary statistics: {summary_file}")
+    
     def get_all_simulators(self) -> List[SingleThreadSimulator]:
         """Get all worker simulators for detailed analysis or visualization."""
         simulators = []

@@ -225,6 +225,10 @@ def main():
     # Save detailed results to HTML file  
     save_results_to_file(simulation, output_file)
     
+    # Export CSV data for comparison analysis
+    csv_base = os.path.join(config_dir, output_base)
+    simulation.export_data_to_csv(csv_base)
+    
     # Generate Plotly visualizations if requested
     if not args.no_plotly:
         try:

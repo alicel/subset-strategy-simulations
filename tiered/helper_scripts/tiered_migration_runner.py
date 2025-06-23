@@ -182,7 +182,7 @@ class MigrationRunner:
                 logger.error(f"Standard output: {e.stdout}")
             return False
     
-    def download_from_s3(self, migration_id: str) -> Optional[str]:
+    def download_from_s3(self, migration_id: str, execution_name: str = None) -> Optional[str]:
         """Download results from S3 for a specific migration ID."""
         logger.info(f"Downloading results from S3 for migration ID: {migration_id}")
         
@@ -204,7 +204,18 @@ class MigrationRunner:
         
         # Local directory: data/downloadedSubsetDefinitions/
         # Preserve full S3 path structure starting from migration ID
-        base_download_dir = "../data/downloadedSubsetDefinitions"
+        # Download to tiered directory's data folder, organized by execution name
+        # Use absolute path to ensure we always download to tiered directory
+        script_dir = os.path.dirname(os.path.abspath(__file__))  # helper_scripts directory
+        tiered_dir = os.path.dirname(script_dir)  # tiered directory
+        
+        if execution_name:
+            # Use new structure: data/downloadedSubsetDefinitions/{execution_name}/
+            base_download_dir = os.path.join(tiered_dir, "data", "downloadedSubsetDefinitions", execution_name)
+        else:
+            # Fallback to old structure for backward compatibility
+            base_download_dir = os.path.join(tiered_dir, "data", "downloadedSubsetDefinitions")
+            
         os.makedirs(base_download_dir, exist_ok=True)
         
         logger.info(f"Downloading from S3 path: s3://{self.bucket_name}/{s3_path}")
@@ -249,7 +260,106 @@ class MigrationRunner:
             logger.error(f"Failed to download from S3 for {migration_id}: {e}")
             return None
     
-    def run_simulation(self, migration_id: str, download_dir: str) -> tuple[bool, dict]:
+    def organize_migration_outputs(self, migration_id: str, original_output_dir: str, execution_name: str) -> dict:
+        """Organize migration outputs into the new directory structure.
+        
+        Args:
+            migration_id: The migration ID (e.g., 'mig100')
+            original_output_dir: The original simulation output directory
+            execution_name: The execution name for organizing outputs
+            
+        Returns:
+            dict: Updated paths to organized files
+        """
+        import shutil
+        import glob
+        
+        # Create the new directory structure
+        script_dir = os.path.dirname(os.path.abspath(__file__))  # helper_scripts directory
+        tiered_dir = os.path.dirname(script_dir)  # tiered directory
+        
+        # Base directories for this execution and migration
+        execution_output_dir = os.path.join(tiered_dir, "output", execution_name)
+        migration_base_dir = os.path.join(execution_output_dir, migration_id)
+        migration_exec_results_dir = os.path.join(migration_base_dir, "migration_exec_results")
+        plots_dir = os.path.join(migration_base_dir, "plots")
+        
+        # Create directories
+        os.makedirs(migration_exec_results_dir, exist_ok=True)
+        os.makedirs(plots_dir, exist_ok=True)
+        
+        organized_files = {}
+        
+        if os.path.exists(original_output_dir):
+            # Get all files in the original output directory
+            all_files = glob.glob(os.path.join(original_output_dir, "*"))
+            
+            for file_path in all_files:
+                if os.path.isfile(file_path):
+                    filename = os.path.basename(file_path)
+                    
+                    # Determine destination based on file type
+                    if filename.endswith('.html'):
+                        # HTML files go to plots directory
+                        dest_path = os.path.join(plots_dir, filename)
+                        organized_files.setdefault('plots', []).append(dest_path)
+                    else:
+                        # Non-HTML files go to migration_exec_results directory
+                        dest_path = os.path.join(migration_exec_results_dir, filename)
+                        organized_files.setdefault('migration_exec_results', []).append(dest_path)
+                    
+                    # Copy the file to the new location
+                    shutil.copy2(file_path, dest_path)
+                    logger.info(f"Organized: {filename} -> {dest_path}")
+        
+        return organized_files
+
+    def organize_html_files_to_plots(self, migration_id: str, migration_exec_results_dir: str, execution_name: str) -> dict:
+        """Move HTML files from migration_exec_results to plots directory.
+        
+        Args:
+            migration_id: The migration ID (e.g., 'mig100')
+            migration_exec_results_dir: The directory containing all simulation outputs
+            execution_name: The execution name for organizing outputs
+            
+        Returns:
+            dict: Paths to organized files
+        """
+        import shutil
+        import glob
+        
+        # Create the plots directory
+        script_dir = os.path.dirname(os.path.abspath(__file__))  # helper_scripts directory
+        tiered_dir = os.path.dirname(script_dir)  # tiered directory
+        plots_dir = os.path.join(tiered_dir, "output", execution_name, migration_id, "plots")
+        os.makedirs(plots_dir, exist_ok=True)
+        
+        organized_files = {
+            'plots': [],
+            'migration_exec_results': []
+        }
+        
+        if os.path.exists(migration_exec_results_dir):
+            # Get all files in the migration_exec_results directory
+            all_files = glob.glob(os.path.join(migration_exec_results_dir, "*"))
+            
+            for file_path in all_files:
+                if os.path.isfile(file_path):
+                    filename = os.path.basename(file_path)
+                    
+                    if filename.endswith('.html'):
+                        # Move HTML files to plots directory
+                        dest_path = os.path.join(plots_dir, filename)
+                        shutil.move(file_path, dest_path)
+                        organized_files['plots'].append(dest_path)
+                        logger.info(f"Moved HTML file: {filename} -> plots/")
+                    else:
+                        # Non-HTML files stay in migration_exec_results
+                        organized_files['migration_exec_results'].append(file_path)
+        
+        return organized_files
+
+    def run_simulation(self, migration_id: str, download_dir: str, execution_name: str = None) -> tuple[bool, dict]:
         """Run the simulation using downloaded data.
         
         Returns:
@@ -261,7 +371,12 @@ class MigrationRunner:
         
         # Build the simulation command
         # The input directory should be the full path to the downloaded subset definitions
-        input_directory = f"data/downloadedSubsetDefinitions/{migration_id}"
+        # Files are downloaded to tiered directory, simulation runs from tiered directory
+        if execution_name:
+            input_directory = f"data/downloadedSubsetDefinitions/{execution_name}/{migration_id}"
+        else:
+            # Fallback to old structure for backward compatibility
+            input_directory = f"data/downloadedSubsetDefinitions/{migration_id}"
         command = ['python', 'run_multi_tier_simulation.py', input_directory]
         
         # Worker Configuration
@@ -299,8 +414,20 @@ class MigrationRunner:
                 output_name = f"{output_name}_{migration_id}"
             command.extend(['--output-name', output_name])
         
-        # Define output directory relative to the TieredStrategySimulation directory
-        output_dir = f"data/simulation_outputs/{migration_id}"
+        # Define output directory - use new structure if execution_name provided, otherwise old structure
+        if execution_name:
+            # Use new organized structure directly
+            script_dir = os.path.dirname(os.path.abspath(__file__))  # helper_scripts directory
+            tiered_dir = os.path.dirname(script_dir)  # tiered directory
+            migration_exec_results_dir = os.path.join(tiered_dir, "output", execution_name, migration_id, "migration_exec_results")
+            # Make sure the directory exists
+            os.makedirs(migration_exec_results_dir, exist_ok=True)
+            # Output directory relative to tiered directory (where simulation runs)
+            output_dir = os.path.relpath(migration_exec_results_dir, tiered_dir)
+        else:
+            # Fallback to old structure for backward compatibility
+            output_dir = f"data/simulation_outputs/{migration_id}"
+        
         command.extend(['--output-dir', output_dir])
         
         # Run from the tiered directory
@@ -358,7 +485,7 @@ class MigrationRunner:
                 logger.error(f"Standard output: {e.stdout}")
             return False, {}
     
-    def process_migration_range(self, start_id: int, end_id: int, prefix: str = "mig"):
+    def process_migration_range(self, start_id: int, end_id: int, prefix: str = "mig", execution_name: str = None):
         """Process a range of migration IDs."""
         logger.info(f"Processing migration range: {prefix}{start_id} to {prefix}{end_id}")
         
@@ -380,16 +507,29 @@ class MigrationRunner:
                     continue
                 
                 # Download from S3
-                download_dir = self.download_from_s3(migration_id)
+                download_dir = self.download_from_s3(migration_id, execution_name)
                 if not download_dir:
                     failed_migrations.append(migration_id)
                     continue
                 
                 # Run simulation
-                success, output_files = self.run_simulation(migration_id, download_dir)
+                success, output_files = self.run_simulation(migration_id, download_dir, execution_name)
                 if not success:
                     failed_migrations.append(migration_id)
                     continue
+                
+                # Organize outputs into new directory structure if execution_name is provided
+                if execution_name and output_files:
+                    # Get the original output directory from the simulation
+                    original_output_dir = None
+                    if 'timeline' in output_files:
+                        original_output_dir = os.path.dirname(output_files['timeline'])
+                    
+                    if original_output_dir:
+                        # Move HTML files to plots directory, leave other files in migration_exec_results
+                        organized_files = self.organize_html_files_to_plots(migration_id, original_output_dir, execution_name)
+                        # Update output_files with organized paths
+                        output_files['organized'] = organized_files
                 
                 successful_migrations.append(migration_id)
                 migration_results[migration_id] = output_files
@@ -406,7 +546,7 @@ class MigrationRunner:
         
         return successful_migrations, failed_migrations, migration_results
     
-    def collect_execution_report_data(self, migration_results: dict) -> dict:
+    def collect_execution_report_data(self, migration_results: dict, execution_name: str = None) -> dict:
         """Collect execution report data from all successful migrations."""
         import json
         import os
@@ -438,14 +578,29 @@ class MigrationRunner:
             json_files = []
             
             try:
-                # Check the simulation output directory (from helper_scripts directory)
-                sim_output_dir = f"../data/simulation_outputs/{migration_id}"
-                if os.path.exists(sim_output_dir):
-                    for file in os.listdir(sim_output_dir):
-                        if file.endswith('_execution_report.json'):
-                            json_path = os.path.join(sim_output_dir, file)
-                            json_files.append(json_path)
-                            logger.info(f"Found execution report JSON: {json_path}")
+                # Check if files are in the new organized structure
+                if execution_name and 'organized' in output_files and 'migration_exec_results' in output_files['organized']:
+                    # Look in the new organized structure
+                    for file_path in output_files['organized']['migration_exec_results']:
+                        if file_path.endswith('_execution_report.json'):
+                            json_files.append(file_path)
+                            logger.info(f"Found execution report JSON: {file_path}")
+                else:
+                    # Fallback: Check the simulation output directory - look in multiple possible locations
+                    possible_paths = [
+                        f"../data/simulation_outputs/{migration_id}",  # From helper_scripts directory
+                        f"data/simulation_outputs/{migration_id}",     # From tiered directory  
+                        f"tiered/data/simulation_outputs/{migration_id}" # From project root
+                    ]
+                    
+                    for sim_output_dir in possible_paths:
+                        if os.path.exists(sim_output_dir):
+                            for file in os.listdir(sim_output_dir):
+                                if file.endswith('_execution_report.json'):
+                                    json_path = os.path.join(sim_output_dir, file)
+                                    json_files.append(json_path)
+                                    logger.info(f"Found execution report JSON: {json_path}")
+                            break  # Found the directory, no need to check other paths
                 
             except Exception as e:
                 logger.warning(f"Error searching for execution report JSON files for {migration_id}: {e}")
@@ -624,20 +779,37 @@ class MigrationRunner:
         for migration_id, output_files in migration_results.items():
             print(f"\nSimulation executed for {migration_id}. Results available at:")
             
-            # Always print timeline path with file:// prefix
-            if 'timeline' in output_files:
-                print(f"  file://{output_files['timeline']}")
-            
-            # Always print detailed path with file:// prefix
-            if 'detailed_pages' in output_files and output_files['detailed_pages']:
-                total_pages = output_files['total_pages']
-                if total_pages == 1:
-                    print(f"  file://{output_files['detailed_pages'][0]}")
-                else:
-                    print(f"  file://{output_files['detailed_pages'][0]} [{total_pages} total pages]")
-            elif 'detailed' in output_files:
-                # Fallback if detailed_pages is empty but detailed path exists
-                print(f"  file://{output_files['detailed']}")
+            # Check if files were organized into new structure
+            if 'organized' in output_files and 'plots' in output_files['organized']:
+                # Use organized file paths
+                plots = output_files['organized']['plots']
+                
+                # Find timeline and detailed files
+                timeline_file = next((f for f in plots if 'timeline' in f), None)
+                detailed_files = [f for f in plots if 'detailed' in f]
+                
+                if timeline_file:
+                    print(f"  file://{timeline_file}")
+                
+                if detailed_files:
+                    if len(detailed_files) == 1:
+                        print(f"  file://{detailed_files[0]}")
+                    else:
+                        print(f"  file://{detailed_files[0]} [{len(detailed_files)} total pages]")
+                        
+            else:
+                # Fallback to original file paths
+                if 'timeline' in output_files:
+                    print(f"  file://{output_files['timeline']}")
+                
+                if 'detailed_pages' in output_files and output_files['detailed_pages']:
+                    total_pages = output_files['total_pages']
+                    if total_pages == 1:
+                        print(f"  file://{output_files['detailed_pages'][0]}")
+                    else:
+                        print(f"  file://{output_files['detailed_pages'][0]} [{total_pages} total pages]")
+                elif 'detailed' in output_files:
+                    print(f"  file://{output_files['detailed']}")
         
         print("\n" + "="*80)
     
@@ -658,20 +830,24 @@ class MigrationRunner:
             return False
         
         # Step 3: Process migration range (environment variables are set per migration)
-        successful, failed, migration_results = self.process_migration_range(start_id, end_id, prefix)
+        successful, failed, migration_results = self.process_migration_range(start_id, end_id, prefix, execution_name)
         
         # Step 4: Collect execution report data
-        execution_data = self.collect_execution_report_data(migration_results)
+        execution_data = self.collect_execution_report_data(migration_results, execution_name)
         
-        # Step 5: Create output directory if it doesn't exist
-        os.makedirs(output_dir, exist_ok=True)
+        # Step 5: Create new directory structure: tiered/output/{execution_name}/exec_reports/
+        script_dir = os.path.dirname(os.path.abspath(__file__))  # helper_scripts directory
+        tiered_dir = os.path.dirname(script_dir)  # tiered directory
+        execution_output_dir = os.path.join(tiered_dir, "output", execution_name)
+        exec_reports_dir = os.path.join(execution_output_dir, "exec_reports")
+        os.makedirs(exec_reports_dir, exist_ok=True)
         
-        # Step 6: Generate execution report with custom naming
-        report_txt_path = os.path.join(output_dir, f"execution_report_{execution_name}.txt")
+        # Step 6: Generate execution report with new structure
+        report_txt_path = os.path.join(exec_reports_dir, f"execution_report_{execution_name}.txt")
         self.generate_execution_report(execution_data, report_txt_path)
         
-        # Step 7: Generate execution report CSV with custom naming
-        report_csv_path = os.path.join(output_dir, f"execution_report_{execution_name}.csv")
+        # Step 7: Generate execution report CSV with new structure
+        report_csv_path = os.path.join(exec_reports_dir, f"execution_report_{execution_name}.csv")
         self.generate_execution_report_csv(execution_data, report_csv_path)
         
         # Step 8: Print results summary
