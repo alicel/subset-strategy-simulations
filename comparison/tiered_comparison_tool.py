@@ -834,6 +834,43 @@ class TieredComparisonAnalyzer:
         print(f"HTML comparison report saved to: {output_file}")
         print(f"Open in browser: file://{os.path.abspath(output_file)}")
 
+def find_project_root() -> str:
+    """Find the project root directory by looking for characteristic files/directories.
+    
+    Returns:
+        Absolute path to the TieredStrategySimulation project root
+        
+    Raises:
+        FileNotFoundError: If project root cannot be determined
+    """
+    # Start from the script's directory
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # Look for indicators that we're in the TieredStrategySimulation project root
+    project_indicators = ['simple', 'tiered', 'comparison', 'utils']
+    
+    # Walk up the directory tree to find the project root
+    search_dir = current_dir
+    for _ in range(5):  # Limit search to 5 levels up
+        # Check if this directory contains the expected project structure
+        if all(os.path.exists(os.path.join(search_dir, indicator)) for indicator in project_indicators):
+            return search_dir
+        
+        # Move up one directory
+        parent_dir = os.path.dirname(search_dir)
+        if parent_dir == search_dir:  # Reached filesystem root
+            break
+        search_dir = parent_dir
+    
+    # If not found by walking up, check if we're already in project root
+    if all(os.path.exists(indicator) for indicator in project_indicators):
+        return os.getcwd()
+    
+    raise FileNotFoundError(
+        "Could not find TieredStrategySimulation project root. "
+        "Please run this script from within the project directory."
+    )
+
 def main():
     parser = argparse.ArgumentParser(
         description="Compare Two Tiered Migration Simulation Results",
@@ -841,13 +878,17 @@ def main():
         epilog="""
 Examples:
   # Compare and save results to organized output directory (default - saves to comparison/output/tiered/my_analysis/)
-  python tiered_comparison_tool.py --exec1 test_new_5 --exec2 test_new_6 --comparison-exec-name my_tiered_analysis
+  python comparison/tiered_comparison_tool.py --exec1 test_new_5 --exec2 test_new_6 --comparison-exec-name my_tiered_analysis
   
   # Compare without saving reports (console output only)
-  python tiered_comparison_tool.py --exec1 test_new_5 --exec2 test_new_6 --comparison-exec-name my_tiered_analysis --omit-reports
+  python comparison/tiered_comparison_tool.py --exec1 test_new_5 --exec2 test_new_6 --comparison-exec-name my_tiered_analysis --omit-reports
   
   # Alternative: specify full paths (backward compatibility)
-  python tiered_comparison_tool.py --exec1-path tiered/output/test_new_5 --exec2-path tiered/output/test_new_6 --comparison-exec-name my_tiered_analysis
+  python comparison/tiered_comparison_tool.py --exec1-path tiered/output/test_new_5 --exec2-path tiered/output/test_new_6 --comparison-exec-name my_tiered_analysis
+  
+  # Can be run from anywhere within the project:
+  cd comparison && python tiered_comparison_tool.py --exec1 test_new_5 --exec2 test_new_6 --comparison-exec-name my_tiered_analysis
+  cd TieredStrategySimulation && python comparison/tiered_comparison_tool.py --exec1 test_new_5 --exec2 test_new_6 --comparison-exec-name my_tiered_analysis
         """
     )
     
@@ -886,8 +927,15 @@ Examples:
         # Use execution names (recommended approach)
         exec1_name = args.exec1
         exec2_name = args.exec2
-        exec1_run_path = f"../tiered/output/{exec1_name}"
-        exec2_run_path = f"../tiered/output/{exec2_name}"
+        # Find project root and construct absolute paths
+        try:
+            project_root = find_project_root()
+            exec1_run_path = os.path.join(project_root, "tiered", "output", exec1_name)
+            exec2_run_path = os.path.join(project_root, "tiered", "output", exec2_name)
+            print(f"Project root: {project_root}")
+        except FileNotFoundError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
         print(f"Comparing tiered executions: {exec1_name} vs {exec2_name}")
         
     elif args.exec1_path and args.exec2_path:
@@ -927,8 +975,13 @@ Examples:
         # Handle output file generation
         if args.comparison_exec_name and not args.omit_reports:
             # Generate organized output under tiered directory (default behavior)
-            output_dir = f"output/tiered/{args.comparison_exec_name}"
-            os.makedirs(output_dir, exist_ok=True)
+            try:
+                project_root = find_project_root()
+                output_dir = os.path.join(project_root, "comparison", "output", "tiered", args.comparison_exec_name)
+                os.makedirs(output_dir, exist_ok=True)
+            except FileNotFoundError as e:
+                print(f"Error: {e}")
+                sys.exit(1)
             
             # Generate default filenames
             csv_file = f"{output_dir}/tiered_comparison_report_{args.comparison_exec_name}.csv"

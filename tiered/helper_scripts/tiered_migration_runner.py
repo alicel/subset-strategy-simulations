@@ -788,6 +788,23 @@ class MigrationRunner:
                 timeline_file = next((f for f in plots if 'timeline' in f), None)
                 detailed_files = [f for f in plots if 'detailed' in f]
                 
+                # Sort detailed files to ensure first page (without page number) comes first
+                def detailed_file_sort_key(filename):
+                    """Sort key function to put the first page (without page number) first."""
+                    basename = os.path.basename(filename)
+                    if 'detailed_page' in basename:
+                        # Extract page number for sorting
+                        import re
+                        match = re.search(r'detailed_page(\d+)', basename)
+                        if match:
+                            return int(match.group(1))
+                        return 999  # fallback for malformed filenames
+                    else:
+                        # First page (no page number) should come first
+                        return 0
+                
+                detailed_files.sort(key=detailed_file_sort_key)
+                
                 if timeline_file:
                     print(f"  file://{timeline_file}")
                 

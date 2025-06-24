@@ -1,0 +1,34 @@
+# TieredStrategySimulation - Complete Project Dependencies
+# This file contains all dependencies needed by any script in the project
+# Generated for project-wide installation and development
+
+# Core Data Processing and Visualization
+plotly>=5.18.0         # Interactive timeline and analysis visualizations 
+pandas>=2.0.0          # Data processing (required by plotly and CSV handling)
+numpy>=1.24.0          # Numerical operations (used by rich and plotly)
+
+# Terminal-based Rich Visualizations
+rich==14.0.0           # Rich terminal output for tiered visualizations
+markdown-it-py==3.0.0  # Required by rich
+mdurl==0.1.2           # Required by rich
+Pygments==2.19.1       # Code highlighting support for rich
+
+# Configuration and Data Formats
+PyYAML>=6.0            # YAML parsing for configuration files
+boto3>=1.26.0          # AWS SDK for S3 operations in migration runners
+
+# Command Line Interface
+click>=8.0.0           # Enhanced CLI interface for helper scripts
+python-dotenv>=0.19.0  # Environment variable loading
+
+# Optional: Development and Extended Features
+# The following packages are commented out as they are optional
+# Uncomment as needed for your specific use case
+
+# kaleido>=0.2.1       # Static image export for plotly charts (optional)
+# jupyter>=1.0.0       # If you want to use notebooks for analysis (optional)
+
+# Note: The following are part of Python standard library and don't need installation:
+# - argparse, sys, os, pathlib, json, csv, re, datetime, subprocess, logging
+# - typing, dataclasses, heapq, collections, math, random
+# - concurrent.futures, threading, time, copy, itertools 
