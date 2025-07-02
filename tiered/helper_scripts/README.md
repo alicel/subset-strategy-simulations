@@ -131,23 +131,50 @@ The `tiered_migration_runner.py` script automates the process of running migrati
 
 ### Usage
 
+The `--execution-name` parameter is **required** and serves as the top-level identifier for organizing all outputs from a migration run. Choose meaningful names like `production_migration_v1`, `performance_test_jan2024`, or `baseline_comparison`.
+
 ```bash
-# Using default configuration file (migration_runner_config.yaml)
-python3 tiered_migration_runner.py --start-id 100 --end-id 200
+# Basic usage with required parameters
+python3 tiered_migration_runner.py --start-id 100 --end-id 200 --execution-name my_test_run
 
 # Using custom configuration file
-python3 tiered_migration_runner.py --config your_config.yaml --start-id 100 --end-id 200
+python3 tiered_migration_runner.py --config-path custom_config.yaml --start-id 100 --end-id 200 --execution-name production_migration
+
+# Full example with all options
+python3 tiered_migration_runner.py \
+    --start-id 100 \
+    --end-id 200 \
+    --execution-name performance_test \
+    --prefix mig \
+    --config-path migration_config.yaml \
+    --bucket my-custom-bucket
 ```
 
 ### Command Line Options
 
-- `--config, -c`: Path to configuration file (default: "migration_runner_config.yaml")
-- `--start-id, -s`: Starting migration ID number (required)
-- `--end-id, -e`: Ending migration ID number (required)
-- `--prefix, -p`: Migration ID prefix (default: "mig")
-- `--bucket, -b`: S3 bucket name (overrides config)
+- `--start-id`: Starting migration ID number (required)
+- `--end-id`: Ending migration ID number (required)
+- `--execution-name`: Name for this execution run - used to structure output directories and files (required)
+- `--prefix`: Migration ID prefix (default: "mig")
+- `--config-path`: Path to configuration file (default: "migration_runner_config.yaml")
+- `--bucket`: S3 bucket name (overrides config)
+- `--output-dir`: Output directory for execution reports (default: "exec_output")
 - `--create-sample-config`: Create sample configuration file
-- `--verbose, -v`: Enable verbose logging
+
+### Execution Naming Best Practices
+
+The `--execution-name` is used throughout the system to organize outputs:
+
+- **File Organization**: All outputs are grouped under `tiered/output/{execution-name}/`
+- **Report Generation**: Execution reports are named using this identifier
+- **Simulation Output**: Individual migration results are organized by execution name
+- **Comparison**: Different execution names allow easy comparison of multiple runs
+
+**Recommended naming patterns:**
+- `baseline_v1` - Initial baseline measurements
+- `perf_test_2024_01_15` - Performance testing with date
+- `prod_migration_batch1` - Production migration batches
+- `config_comparison_a` - Configuration comparison runs
 
 ## Configuration File
 
@@ -413,31 +440,42 @@ simulation:
 
 ### Execution Flow
 
-For each migration ID (e.g., `mig100` to `mig200`):
+For each migration ID in the specified range (e.g., `mig100` to `mig200`) with execution name `performance_test`:
 
 1. **Environment Setup**: Set all `MIGRATION_*` environment variables
 2. **Go Execution**: Run `./mba/migration-bucket-accessor calc_subsets`
 3. **S3 Download**: Download from `s3://bucket/mig100/metadata/subsets/mytieredcalc/` to `downloadedSubsetDefinitions/mig100/`
 4. **Simulation**: Execute `run_multi_tier_simulation.py` with configured options
-5. **Output**: Generate results in `simulation_outputs/mig100/`
+5. **Output Organization**: Move results to `tiered/output/performance_test/mig100/`
+6. **Report Generation**: Create execution summary reports in `tiered/output/performance_test/exec_reports/`
 
 ### Output Structure
 
+The `--execution-name` parameter structures all output files and directories. For example, with `--execution-name performance_test`:
+
 ```
-simulation_outputs/
-├── mig100/
-│   ├── migration_simulation_mig100.html           # Timeline visualization
-│   ├── migration_simulation_mig100_detailed.html  # Thread-level details
-│   ├── migration_simulation_mig100_workers.csv    # Worker data
-│   ├── migration_simulation_mig100_threads.csv    # Thread data
-│   └── config_migration_simulation_mig100.txt     # Configuration record
-├── mig101/
-│   └── ... (same structure)
-downloadedSubsetDefinitions/
-├── mig100/
-│   └── metadata/subsets/mytieredcalc/             # Downloaded S3 files
-├── mig101/
-│   └── metadata/subsets/mytieredcalc/
+tiered/
+├── output/
+│   └── performance_test/                          # Organized by execution name
+│       ├── exec_reports/
+│       │   ├── execution_report_performance_test.txt    # Execution summary
+│       │   └── execution_report_performance_test.csv    # Execution metrics
+│       ├── mig100/
+│       │   ├── plots/
+│       │   │   ├── tiered_migration_simulation_mig100.html      # Timeline
+│       │   │   └── tiered_migration_simulation_mig100_detailed.html  # Details
+│       │   └── data/
+│       │       ├── tiered_migration_simulation_mig100_workers.csv
+│       │       ├── tiered_migration_simulation_mig100_threads.csv
+│       │       └── config_tiered_migration_simulation_mig100.txt
+│       └── mig101/
+│           └── ... (same structure)
+└── helper_scripts/
+    └── downloadedSubsetDefinitions/
+        ├── mig100/
+        │   └── metadata/subsets/mytieredcalc/     # Downloaded S3 files
+        └── mig101/
+            └── metadata/subsets/mytieredcalc/
 ```
 
 ### Troubleshooting
@@ -451,9 +489,9 @@ downloadedSubsetDefinitions/
 
 #### Validation
 
-Use `--verbose` flag for detailed logging:
+Test with a single migration ID for detailed logging:
 ```bash
-python3 tiered_migration_runner.py --config config.yaml --start-id 100 --end-id 100 --verbose
+python3 tiered_migration_runner.py --config-path config.yaml --start-id 100 --end-id 100 --execution-name test_run
 ```
 
 #### AWS SSO Issues
