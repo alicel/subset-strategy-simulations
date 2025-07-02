@@ -28,6 +28,9 @@ class TieredMigrationMetrics:
     cpu_time: float  # total thread time used
     workers_by_tier: Dict[str, int]  # tier -> worker count
     cpus_by_tier: Dict[str, int]  # tier -> total threads
+    stragglers_by_tier: Dict[str, int]  # tier -> straggler worker count
+    # Configuration data
+    config: Dict[str, any]  # simulation and migration configuration
     
 @dataclass
 class TieredComparisonResult:
@@ -91,6 +94,69 @@ class TieredComparisonResult:
         if self.exec2_metrics.cpu_time == 0:
             return float('inf') if self.exec1_metrics.cpu_time > 0 else 1.0
         return self.exec1_metrics.cpu_time / self.exec2_metrics.cpu_time
+    
+    # Difference properties (exec2 - exec1)
+    @property
+    def execution_time_diff(self) -> float:
+        """Difference in execution time (exec2 - exec1)."""
+        return self.exec2_metrics.total_execution_time - self.exec1_metrics.total_execution_time
+    
+    @property
+    def worker_count_diff(self) -> int:
+        """Difference in worker count (exec2 - exec1)."""
+        return self.exec2_metrics.total_workers - self.exec1_metrics.total_workers
+    
+    @property
+    def cpu_count_diff(self) -> int:
+        """Difference in CPU count (exec2 - exec1)."""
+        return self.exec2_metrics.total_cpus - self.exec1_metrics.total_cpus
+    
+    @property
+    def cpu_time_diff(self) -> float:
+        """Difference in CPU time (exec2 - exec1)."""
+        return self.exec2_metrics.cpu_time - self.exec1_metrics.cpu_time
+    
+    def get_config_comparison(self, config_keys: List[str]) -> Dict[str, any]:
+        """Compare specific configuration parameters between executions."""
+        comparison = {}
+        
+        for key in config_keys:
+            exec1_value = self._get_config_value(self.exec1_metrics.config, key)
+            exec2_value = self._get_config_value(self.exec2_metrics.config, key)
+            
+            comparison[key] = {
+                'exec1': exec1_value,
+                'exec2': exec2_value,
+                'same': exec1_value == exec2_value
+            }
+        
+        return comparison
+    
+    def _get_config_value(self, config: Dict[str, any], key: str):
+        """Get a configuration value, looking in both simulation and migration sections."""
+        # Handle parameter name mapping from simulation config
+        simulation_mapping = {
+            'small_tier_worker_num_threads': 'small_threads',
+            'medium_tier_worker_num_threads': 'medium_threads',
+            'large_tier_worker_num_threads': 'large_threads'  # This is always 1
+        }
+        
+        # First try direct lookup in simulation config
+        if 'simulation' in config and key in config['simulation']:
+            return config['simulation'][key]
+        
+        # Try mapped lookup in simulation config
+        if key in simulation_mapping and 'simulation' in config:
+            mapped_key = simulation_mapping[key]
+            if mapped_key in config['simulation']:
+                return config['simulation'][mapped_key]
+        
+        # Then try migration config
+        if 'migration' in config and key in config['migration']:
+            return config['migration'][key]
+        
+        # Return None if not found
+        return None
 
 class TieredSimulationDataExtractor:
     """Extracts metrics from tiered simulation output files."""
@@ -105,6 +171,9 @@ class TieredSimulationDataExtractor:
         if execution_name is None:
             execution_name = tiered_path.name
         
+        # Try to extract execution-level configuration first
+        execution_config = self._extract_execution_config(tiered_path)
+        
         metrics = {}
         
         # Look for migration directories
@@ -117,13 +186,55 @@ class TieredSimulationDataExtractor:
                 # Extract metrics from JSON execution report
                 json_files = list(migration_dir.glob('migration_exec_results/*_execution_report.json'))
                 if json_files:
-                    migration_metrics = self._parse_tiered_json(migration_id, json_files[0], execution_name)
+                    migration_metrics = self._parse_tiered_json(migration_id, json_files[0], execution_name, execution_config)
                     if migration_metrics:
                         metrics[migration_id] = migration_metrics
         
         return metrics
     
-    def _parse_tiered_json(self, migration_id: str, json_file: Path, execution_name: str) -> Optional[TieredMigrationMetrics]:
+    def _extract_execution_config(self, tiered_path: Path) -> Dict[str, any]:
+        """Extract execution-level configuration from exec_reports directory."""
+        execution_config = {}
+        
+        # Look for execution report files that might contain configuration
+        exec_reports_dir = tiered_path / 'exec_reports'
+        if exec_reports_dir.exists():
+            # Look for execution report text files that contain migration configuration
+            for report_file in exec_reports_dir.glob('execution_report_*.txt'):
+                try:
+                    with open(report_file, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                        
+                    # Parse configuration from the report
+                    config_section = False
+                    for line in content.split('\n'):
+                        line = line.strip()
+                        if line.startswith('MIGRATION CONFIGURATION'):
+                            config_section = True
+                            continue
+                        elif line.startswith('SIMULATION CONFIGURATION') or line.startswith('PER-MIGRATION'):
+                            config_section = False
+                            continue
+                        
+                        if config_section and ':' in line and not line.startswith('-'):
+                            key, value = line.split(':', 1)
+                            key = key.strip()
+                            value = value.strip()
+                            
+                            # Convert values to appropriate types
+                            if value.lower() in ['true', 'false']:
+                                execution_config[key] = value.lower() == 'true'
+                            elif value.replace('.', '').replace('-', '').isdigit():
+                                execution_config[key] = float(value) if '.' in value else int(value)
+                            else:
+                                execution_config[key] = value
+                    break  # Use first report file found
+                except Exception as e:
+                    print(f"Warning: Could not parse execution report {report_file}: {e}")
+        
+        return execution_config
+    
+    def _parse_tiered_json(self, migration_id: str, json_file: Path, execution_name: str, execution_config: Dict[str, any] = None) -> Optional[TieredMigrationMetrics]:
         """Parse tiered simulation JSON and CSV files to extract actual metrics."""
         try:
             # Parse JSON for basic metrics
@@ -147,12 +258,15 @@ class TieredSimulationDataExtractor:
             total_cpus = 0
             workers_by_tier = {}
             cpus_by_tier = {}
+            stragglers_by_tier = {}
             
             for tier in ['SMALL', 'MEDIUM', 'LARGE']:
                 if tier in by_tier:
                     tier_workers = by_tier[tier].get('total_workers', 0)
+                    tier_stragglers = by_tier[tier].get('straggler_workers', 0)
                     total_workers += tier_workers
                     workers_by_tier[tier] = tier_workers
+                    stragglers_by_tier[tier] = tier_stragglers
                     
                     # Calculate CPUs for this tier
                     if tier_workers > 0:
@@ -162,6 +276,11 @@ class TieredSimulationDataExtractor:
                         cpus_by_tier[tier] = tier_cpus
                     else:
                         cpus_by_tier[tier] = 0
+                else:
+                    # Initialize empty tiers
+                    workers_by_tier[tier] = 0
+                    cpus_by_tier[tier] = 0
+                    stragglers_by_tier[tier] = 0
             
             # Calculate actual CPU time from worker CSV if available
             cpu_time = 0.0
@@ -178,6 +297,12 @@ class TieredSimulationDataExtractor:
                 cpu_time = total_execution_time * total_cpus if total_cpus > 0 else total_execution_time
                 print(f"Warning: Worker CSV not found for {migration_id}, using conservative CPU time estimate")
             
+            # Combine simulation config from JSON with execution config
+            combined_config = {
+                'simulation': simulation_config,
+                'migration': execution_config or {}
+            }
+            
             return TieredMigrationMetrics(
                 migration_id=migration_id,
                 execution_name=execution_name,
@@ -186,7 +311,9 @@ class TieredSimulationDataExtractor:
                 total_cpus=total_cpus,
                 cpu_time=cpu_time,
                 workers_by_tier=workers_by_tier,
-                cpus_by_tier=cpus_by_tier
+                cpus_by_tier=cpus_by_tier,
+                stragglers_by_tier=stragglers_by_tier,
+                config=combined_config
             )
             
         except Exception as e:
@@ -403,18 +530,45 @@ class TieredComparisonAnalyzer:
             csvfile.write(f"# Execution 1: {exec1_name or 'Unknown'}\n")
             csvfile.write(f"# Execution 2: {exec2_name or 'Unknown'}\n")
             csvfile.write(f"# Common Migrations: {len(comparisons)}\n")
+            csvfile.write("# Diff columns show Exec2 - Exec1 (positive = Exec2 higher, negative = Exec2 lower)\n")
+            csvfile.write("#\n")
+            
+            # Write configuration comparison
+            if comparisons:
+                csvfile.write("# CONFIGURATION COMPARISON\n")
+                config_keys = [
+                    'small_tier_max_sstable_size_gb',
+                    'small_tier_thread_subset_max_size_floor_gb', 
+                    'small_tier_worker_num_threads',
+                    'medium_tier_max_sstable_size_gb',
+                    'medium_tier_worker_num_threads',
+                    'optimize_packing_medium_subsets',
+                    'execution_mode',
+                    'max_concurrent_workers'
+                ]
+                first_comp = comparisons[0]
+                config_comparison = first_comp.get_config_comparison(config_keys)
+                
+                for key, comparison in config_comparison.items():
+                    exec1_value = comparison['exec1'] if comparison['exec1'] is not None else 'N/A'
+                    exec2_value = comparison['exec2'] if comparison['exec2'] is not None else 'N/A'
+                    status = 'Same' if comparison['same'] else 'Different'
+                    csvfile.write(f"# {key}: {exec1_value} vs {exec2_value} ({status})\n")
+            
             csvfile.write("\n")
             
             # CSV header
             fieldnames = [
                 'Migration_ID',
-                'Exec1_Execution_Time', 'Exec2_Execution_Time', 'Execution_Time_Ratio_1_2', 'Execution_Time_Ratio_2_1',
-                'Exec1_Workers', 'Exec2_Workers', 'Worker_Ratio_1_2', 'Worker_Ratio_2_1',
-                'Exec1_CPUs', 'Exec2_CPUs', 'CPU_Ratio_1_2', 'CPU_Ratio_2_1',
-                'Exec1_CPU_Time', 'Exec2_CPU_Time', 'CPU_Time_Ratio_1_2', 'CPU_Time_Ratio_2_1',
+                'Exec1_Execution_Time', 'Exec2_Execution_Time', 'Execution_Time_Diff',
+                'Exec1_Workers', 'Exec2_Workers', 'Worker_Diff',
+                'Exec1_CPUs', 'Exec2_CPUs', 'CPU_Diff',
+                'Exec1_CPU_Time', 'Exec2_CPU_Time', 'CPU_Time_Diff',
                 'Exec1_Small_Workers', 'Exec1_Medium_Workers', 'Exec1_Large_Workers',
+                'Exec1_Small_Stragglers', 'Exec1_Medium_Stragglers', 'Exec1_Large_Stragglers',
                 'Exec1_Small_CPUs', 'Exec1_Medium_CPUs', 'Exec1_Large_CPUs',
                 'Exec2_Small_Workers', 'Exec2_Medium_Workers', 'Exec2_Large_Workers',
+                'Exec2_Small_Stragglers', 'Exec2_Medium_Stragglers', 'Exec2_Large_Stragglers',
                 'Exec2_Small_CPUs', 'Exec2_Medium_CPUs', 'Exec2_Large_CPUs'
             ]
             
@@ -430,29 +584,31 @@ class TieredComparisonAnalyzer:
                     'Migration_ID': comp.migration_id,
                     'Exec1_Execution_Time': f"{exec1.total_execution_time:.2f}",
                     'Exec2_Execution_Time': f"{exec2.total_execution_time:.2f}",
-                    'Execution_Time_Ratio_1_2': f"{comp.execution_time_ratio_inverse:.4f}",
-                    'Execution_Time_Ratio_2_1': f"{comp.execution_time_ratio:.4f}",
+                    'Execution_Time_Diff': f"{comp.execution_time_diff:.2f}",
                     'Exec1_Workers': exec1.total_workers,
                     'Exec2_Workers': exec2.total_workers,
-                    'Worker_Ratio_1_2': f"{comp.worker_count_ratio_inverse:.4f}",
-                    'Worker_Ratio_2_1': f"{comp.worker_count_ratio:.4f}",
+                    'Worker_Diff': comp.worker_count_diff,
                     'Exec1_CPUs': exec1.total_cpus,
                     'Exec2_CPUs': exec2.total_cpus,
-                    'CPU_Ratio_1_2': f"{comp.cpu_count_ratio_inverse:.4f}",
-                    'CPU_Ratio_2_1': f"{comp.cpu_count_ratio:.4f}",
+                    'CPU_Diff': comp.cpu_count_diff,
                     'Exec1_CPU_Time': f"{exec1.cpu_time:.2f}",
                     'Exec2_CPU_Time': f"{exec2.cpu_time:.2f}",
-                    'CPU_Time_Ratio_1_2': f"{comp.cpu_time_ratio_inverse:.4f}",
-                    'CPU_Time_Ratio_2_1': f"{comp.cpu_time_ratio:.4f}",
+                    'CPU_Time_Diff': f"{comp.cpu_time_diff:.2f}",
                     'Exec1_Small_Workers': exec1.workers_by_tier.get('SMALL', 0),
                     'Exec1_Medium_Workers': exec1.workers_by_tier.get('MEDIUM', 0),
                     'Exec1_Large_Workers': exec1.workers_by_tier.get('LARGE', 0),
+                    'Exec1_Small_Stragglers': exec1.stragglers_by_tier.get('SMALL', 0),
+                    'Exec1_Medium_Stragglers': exec1.stragglers_by_tier.get('MEDIUM', 0),
+                    'Exec1_Large_Stragglers': exec1.stragglers_by_tier.get('LARGE', 0),
                     'Exec1_Small_CPUs': exec1.cpus_by_tier.get('SMALL', 0),
                     'Exec1_Medium_CPUs': exec1.cpus_by_tier.get('MEDIUM', 0),
                     'Exec1_Large_CPUs': exec1.cpus_by_tier.get('LARGE', 0),
                     'Exec2_Small_Workers': exec2.workers_by_tier.get('SMALL', 0),
                     'Exec2_Medium_Workers': exec2.workers_by_tier.get('MEDIUM', 0),
                     'Exec2_Large_Workers': exec2.workers_by_tier.get('LARGE', 0),
+                    'Exec2_Small_Stragglers': exec2.stragglers_by_tier.get('SMALL', 0),
+                    'Exec2_Medium_Stragglers': exec2.stragglers_by_tier.get('MEDIUM', 0),
+                    'Exec2_Large_Stragglers': exec2.stragglers_by_tier.get('LARGE', 0),
                     'Exec2_Small_CPUs': exec2.cpus_by_tier.get('SMALL', 0),
                     'Exec2_Medium_CPUs': exec2.cpus_by_tier.get('MEDIUM', 0),
                     'Exec2_Large_CPUs': exec2.cpus_by_tier.get('LARGE', 0),
@@ -491,47 +647,85 @@ class TieredComparisonAnalyzer:
             if exec2_only:
                 lines.append(f"  Exec2 Only ({len(exec2_only)}): {sorted(exec2_only)}")
         
+        # Configuration comparison
+        if comparisons:
+            lines.append("")
+            lines.append("="*60)
+            lines.append("CONFIGURATION COMPARISON")
+            lines.append("="*60)
+            
+            config_keys = [
+                'small_tier_max_sstable_size_gb',
+                'small_tier_thread_subset_max_size_floor_gb', 
+                'small_tier_worker_num_threads',
+                'medium_tier_max_sstable_size_gb',
+                'medium_tier_worker_num_threads',
+                'optimize_packing_medium_subsets',
+                'execution_mode',
+                'max_concurrent_workers'
+            ]
+            first_comp = comparisons[0]
+            config_comparison = first_comp.get_config_comparison(config_keys)
+            
+            lines.append("")
+            lines.append(f"{'Parameter':<40} {'Exec1':<15} {'Exec2':<15} {'Status':<10}")
+            lines.append("-" * 85)
+            
+            for key, comparison in config_comparison.items():
+                exec1_value = comparison['exec1'] if comparison['exec1'] is not None else 'N/A'
+                exec2_value = comparison['exec2'] if comparison['exec2'] is not None else 'N/A'
+                status = 'Same' if comparison['same'] else 'Different'
+                
+                lines.append(f"{key:<40} {str(exec1_value):<15} {str(exec2_value):<15} {status:<10}")
+        
         # Header
         exec1_short = (exec1_name[:8] + "..") if exec1_name and len(exec1_name) > 10 else (exec1_name or "Exec1")
         exec2_short = (exec2_name[:8] + "..") if exec2_name and len(exec2_name) > 10 else (exec2_name or "Exec2")
         
         lines.append("")
-        lines.append(f"{'Migration':<12} {'Execution Time':<35} {'Workers':<30} {'CPUs':<30} {'CPU Time':<35}")
-        lines.append(f"{'ID':<12} {exec1_short:<10} {exec2_short:<10} {'1/2':<5} {'2/1':<5} {exec1_short:<8} {exec2_short:<8} {'1/2':<5} {'2/1':<5} {exec1_short:<8} {exec2_short:<8} {'1/2':<5} {'2/1':<5} {exec1_short:<10} {exec2_short:<10} {'1/2':<5} {'2/1':<5}")
-        lines.append("-" * 125)
+        lines.append(f"{'Migration':<12} {'Execution Time':<30} {'Workers':<25} {'CPUs':<25} {'CPU Time':<30}")
+        lines.append(f"{'ID':<12} {exec1_short:<10} {exec2_short:<10} {'Diff':<8} {exec1_short:<8} {exec2_short:<8} {'Diff':<6} {exec1_short:<8} {exec2_short:<8} {'Diff':<6} {exec1_short:<10} {exec2_short:<10} {'Diff':<8}")
+        lines.append("-" * 115)
         
         # Data rows
         for comp in comparisons:
             exec1 = comp.exec1_metrics
             exec2 = comp.exec2_metrics
             
-            # Format large numbers
+            # Format values and differences
             exec1_time = self._format_time(exec1.total_execution_time)
             exec2_time = self._format_time(exec2.total_execution_time)
-            time_ratio_12 = f"{comp.execution_time_ratio_inverse:.2f}"
-            time_ratio_21 = f"{comp.execution_time_ratio:.2f}"
+            time_diff = f"{comp.execution_time_diff:+.1f}s" if abs(comp.execution_time_diff) < 60 else f"{comp.execution_time_diff/60:+.1f}m"
             
             exec1_cpu_time = self._format_time(exec1.cpu_time)
             exec2_cpu_time = self._format_time(exec2.cpu_time)
-            cpu_time_ratio_12 = f"{comp.cpu_time_ratio_inverse:.2f}"
-            cpu_time_ratio_21 = f"{comp.cpu_time_ratio:.2f}"
+            cpu_time_diff = f"{comp.cpu_time_diff:+.1f}s" if abs(comp.cpu_time_diff) < 60 else f"{comp.cpu_time_diff/60:+.1f}m"
             
-            worker_ratio_12 = f"{comp.worker_count_ratio_inverse:.2f}"
-            worker_ratio_21 = f"{comp.worker_count_ratio:.2f}"
+            # Format worker counts with straggler information
+            def format_worker_text(workers, stragglers):
+                if workers == 0:
+                    return "0"
+                elif stragglers > 0:
+                    return f"{workers}[{stragglers}]"
+                else:
+                    return str(workers)
             
-            cpu_ratio_12 = f"{comp.cpu_count_ratio_inverse:.2f}"
-            cpu_ratio_21 = f"{comp.cpu_count_ratio:.2f}"
+            exec1_workers_text = format_worker_text(exec1.total_workers, sum(exec1.stragglers_by_tier.values()))
+            exec2_workers_text = format_worker_text(exec2.total_workers, sum(exec2.stragglers_by_tier.values()))
             
-            lines.append(f"{comp.migration_id:<12} {exec1_time:<10} {exec2_time:<10} {time_ratio_12:<5} {time_ratio_21:<5} "
-                        f"{exec1.total_workers:<8} {exec2.total_workers:<8} {worker_ratio_12:<5} {worker_ratio_21:<5} "
-                        f"{exec1.total_cpus:<8} {exec2.total_cpus:<8} {cpu_ratio_12:<5} {cpu_ratio_21:<5} "
-                        f"{exec1_cpu_time:<10} {exec2_cpu_time:<10} {cpu_time_ratio_12:<5} {cpu_time_ratio_21:<5}")
+            worker_diff = f"{comp.worker_count_diff:+d}"
+            cpu_diff = f"{comp.cpu_count_diff:+d}"
+            
+            lines.append(f"{comp.migration_id:<12} {exec1_time:<10} {exec2_time:<10} {time_diff:<8} "
+                        f"{exec1_workers_text:<8} {exec2_workers_text:<8} {worker_diff:<6} "
+                        f"{exec1.total_cpus:<8} {exec2.total_cpus:<8} {cpu_diff:<6} "
+                        f"{exec1_cpu_time:<10} {exec2_cpu_time:<10} {cpu_time_diff:<8}")
         
         # Summary statistics
         lines.append("")
-        lines.append("="*125)
+        lines.append("="*115)
         lines.append("AGGREGATE ANALYSIS")
-        lines.append("="*125)
+        lines.append("="*115)
         
         total_exec1_time = sum(c.exec1_metrics.total_execution_time for c in comparisons)
         total_exec2_time = sum(c.exec2_metrics.total_execution_time for c in comparisons)
@@ -549,36 +743,29 @@ class TieredComparisonAnalyzer:
         lines.append("Total Execution Time:")
         lines.append(f"  Exec1:      {self._format_time(total_exec1_time)}")
         lines.append(f"  Exec2:      {self._format_time(total_exec2_time)}")
-        if total_exec1_time > 0:
-            lines.append(f"  Exec1/Exec2: {total_exec1_time/total_exec2_time:.2f} (>1.0 = exec2 faster)")
-            lines.append(f"  Exec2/Exec1: {total_exec2_time/total_exec1_time:.2f} (<1.0 = exec2 faster)")
+        time_diff = total_exec2_time - total_exec1_time
+        lines.append(f"  Difference: {time_diff:+.2f}s ({'Exec2 slower' if time_diff > 0 else 'Exec2 faster' if time_diff < 0 else 'Same'})")
         
         lines.append("")
         lines.append("Total Workers:")
         lines.append(f"  Exec1:      {total_exec1_workers}")
         lines.append(f"  Exec2:      {total_exec2_workers}")
-        if total_exec2_workers > 0:
-            lines.append(f"  Exec1/Exec2: {total_exec1_workers/total_exec2_workers:.2f}")
-        if total_exec1_workers > 0:
-            lines.append(f"  Exec2/Exec1: {total_exec2_workers/total_exec1_workers:.2f}")
+        worker_diff = total_exec2_workers - total_exec1_workers
+        lines.append(f"  Difference: {worker_diff:+d} ({'Exec2 more' if worker_diff > 0 else 'Exec2 fewer' if worker_diff < 0 else 'Same'})")
         
         lines.append("")
         lines.append("Total CPUs:")
         lines.append(f"  Exec1:      {total_exec1_cpus}")
         lines.append(f"  Exec2:      {total_exec2_cpus}")
-        if total_exec2_cpus > 0:
-            lines.append(f"  Exec1/Exec2: {total_exec1_cpus/total_exec2_cpus:.2f}")
-        if total_exec1_cpus > 0:
-            lines.append(f"  Exec2/Exec1: {total_exec2_cpus/total_exec1_cpus:.2f}")
+        cpu_diff = total_exec2_cpus - total_exec1_cpus
+        lines.append(f"  Difference: {cpu_diff:+d} ({'Exec2 more' if cpu_diff > 0 else 'Exec2 fewer' if cpu_diff < 0 else 'Same'})")
         
         lines.append("")
         lines.append("Total CPU Time:")
         lines.append(f"  Exec1:      {self._format_time(total_exec1_cpu_time)}")  
         lines.append(f"  Exec2:      {self._format_time(total_exec2_cpu_time)}")
-        if total_exec2_cpu_time > 0:
-            lines.append(f"  Exec1/Exec2: {total_exec1_cpu_time/total_exec2_cpu_time:.2f}")
-        if total_exec1_cpu_time > 0:
-            lines.append(f"  Exec2/Exec1: {total_exec2_cpu_time/total_exec1_cpu_time:.2f}")
+        cpu_time_diff = total_exec2_cpu_time - total_exec1_cpu_time
+        lines.append(f"  Difference: {cpu_time_diff:+.2f}s ({'Exec2 more' if cpu_time_diff > 0 else 'Exec2 less' if cpu_time_diff < 0 else 'Same'})")
         
         return "\n".join(lines)
     
@@ -621,6 +808,10 @@ class TieredComparisonAnalyzer:
         .config {{ background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin-bottom: 20px; }}
         .summary {{ background-color: #e8f4f8; padding: 15px; border-radius: 5px; margin-bottom: 20px; }}
         .aggregate {{ background-color: #fff3e0; padding: 15px; border-radius: 5px; margin-bottom: 20px; }}
+        .config-comparison {{ background-color: #f0f8ff; padding: 15px; border-radius: 5px; margin-bottom: 20px; }}
+        .config-same {{ background-color: #e8f5e8 !important; }}
+        .config-different {{ background-color: #ffe8e8 !important; }}
+        .has-stragglers {{ background-color: #ffcccc !important; }} /* Light red for cells with stragglers */
         
         table {{ border-collapse: collapse; width: 100%; margin-bottom: 20px; background-color: white; }}
         th, td {{ border: 1px solid #ddd; padding: 10px; text-align: left; }}
@@ -631,6 +822,8 @@ class TieredComparisonAnalyzer:
         .migration-details {{ margin-top: 20px; }}
         .best-time {{ background-color: #c8e6c9 !important; font-weight: bold; }}
         .best-ratio {{ background-color: #c8e6c9 !important; font-weight: bold; }}
+        .positive-diff {{ background-color: #add8e6 !important; }} /* Light blue for positive differences */
+        .negative-diff {{ background-color: #fff8dc !important; }} /* Light yellow for negative differences */
         
         .metric-section {{ margin-bottom: 30px; }}
         .exclusive-migrations {{ background-color: #fff8e1; padding: 15px; border-radius: 5px; margin-bottom: 20px; }}
@@ -678,31 +871,32 @@ class TieredComparisonAnalyzer:
             <h3>Total Execution Time</h3>
             <p><strong>Execution 1:</strong> {self._format_time(total_exec1_time)}</p>
             <p><strong>Execution 2:</strong> {self._format_time(total_exec2_time)}</p>
-            <p><strong>Exec1/Exec2:</strong> {total_exec1_time/total_exec2_time:.2f} (>1.0 = exec2 faster)</p>
-            <p><strong>Exec2/Exec1:</strong> {total_exec2_time/total_exec1_time:.2f} (<1.0 = exec2 faster)</p>
+            <p><strong>Difference:</strong> {'+' if (total_exec2_time - total_exec1_time) >= 0 else ''}{self._format_time(total_exec2_time - total_exec1_time) if (total_exec2_time - total_exec1_time) >= 0 else '-' + self._format_time(abs(total_exec2_time - total_exec1_time))} (Exec2 {'slower' if total_exec2_time > total_exec1_time else 'faster' if total_exec2_time < total_exec1_time else 'same'})</p>
         </div>
         <div>
             <h3>Total Workers</h3>
             <p><strong>Execution 1:</strong> {total_exec1_workers:,}</p>
             <p><strong>Execution 2:</strong> {total_exec2_workers:,}</p>
-            <p><strong>Exec1/Exec2:</strong> {total_exec1_workers/total_exec2_workers:.2f}</p>
-            <p><strong>Exec2/Exec1:</strong> {total_exec2_workers/total_exec1_workers:.2f}</p>
+            <p><strong>Difference:</strong> {total_exec2_workers - total_exec1_workers:+,} (Exec2 {'more' if total_exec2_workers > total_exec1_workers else 'fewer' if total_exec2_workers < total_exec1_workers else 'same'})</p>
         </div>
         <div>
             <h3>Total CPUs</h3>
             <p><strong>Execution 1:</strong> {total_exec1_cpus:,}</p>
             <p><strong>Execution 2:</strong> {total_exec2_cpus:,}</p>
-            <p><strong>Exec1/Exec2:</strong> {total_exec1_cpus/total_exec2_cpus:.2f}</p>
-            <p><strong>Exec2/Exec1:</strong> {total_exec2_cpus/total_exec1_cpus:.2f}</p>
+            <p><strong>Difference:</strong> {total_exec2_cpus - total_exec1_cpus:+,} (Exec2 {'more' if total_exec2_cpus > total_exec1_cpus else 'fewer' if total_exec2_cpus < total_exec1_cpus else 'same'})</p>
         </div>
         <div>
             <h3>Total CPU Time</h3>
             <p><strong>Execution 1:</strong> {self._format_time(total_exec1_cpu_time)}</p>
             <p><strong>Execution 2:</strong> {self._format_time(total_exec2_cpu_time)}</p>
-            <p><strong>Exec1/Exec2:</strong> {total_exec1_cpu_time/total_exec2_cpu_time:.2f}</p>
-            <p><strong>Exec2/Exec1:</strong> {total_exec2_cpu_time/total_exec1_cpu_time:.2f}</p>
+            <p><strong>Difference:</strong> {'+' if (total_exec2_cpu_time - total_exec1_cpu_time) >= 0 else ''}{self._format_time(total_exec2_cpu_time - total_exec1_cpu_time) if (total_exec2_cpu_time - total_exec1_cpu_time) >= 0 else '-' + self._format_time(abs(total_exec2_cpu_time - total_exec1_cpu_time))} (Exec2 {'more' if total_exec2_cpu_time > total_exec1_cpu_time else 'less' if total_exec2_cpu_time < total_exec1_cpu_time else 'same'})</p>
         </div>
     </div>
+</div>
+
+<div class="config-comparison">
+    <h2>Configuration Comparison</h2>
+    {self._generate_config_comparison_html(comparisons, exec1_name, exec2_name)}
 </div>
 
 <div class="migration-details">
@@ -711,30 +905,26 @@ class TieredComparisonAnalyzer:
         <thead>
             <tr>
                 <th rowspan="2">Migration ID</th>
-                <th colspan="4">Execution Time</th>
-                <th colspan="4">Workers</th>
-                <th colspan="4">CPUs</th>
-                <th colspan="4">CPU Time</th>
+                <th colspan="3">Execution Time</th>
+                <th colspan="3">Workers</th>
+                <th colspan="3">CPUs</th>
+                <th colspan="3">CPU Time</th>
                 <th colspan="6">Exec1 Tier Distribution</th>
                 <th colspan="6">Exec2 Tier Distribution</th>
             </tr>
             <tr>
                 <th>Exec1</th>
                 <th>Exec2</th>
-                <th class="ratio-header">1/2</th>
-                <th class="ratio-header">2/1</th>
+                <th class="diff-header">Diff</th>
                 <th>Exec1</th>
                 <th>Exec2</th>
-                <th class="ratio-header">1/2</th>
-                <th class="ratio-header">2/1</th>
+                <th class="diff-header">Diff</th>
                 <th>Exec1</th>
                 <th>Exec2</th>
-                <th class="ratio-header">1/2</th>
-                <th class="ratio-header">2/1</th>
+                <th class="diff-header">Diff</th>
                 <th>Exec1</th>
                 <th>Exec2</th>
-                <th class="ratio-header">1/2</th>
-                <th class="ratio-header">2/1</th>
+                <th class="diff-header">Diff</th>
                 <th>Small W</th>
                 <th>Med W</th>
                 <th>Large W</th>
@@ -756,13 +946,9 @@ class TieredComparisonAnalyzer:
             exec1 = comp.exec1_metrics
             exec2 = comp.exec2_metrics
             
-            # Determine best execution time and ratio
-            best_exec_time = "exec1" if exec1.total_execution_time <= exec2.total_execution_time else "exec2"
-            best_exec_ratio = "21" if comp.execution_time_ratio <= comp.execution_time_ratio_inverse else "12"
-            
-            # Determine best CPU time and ratio
-            best_cpu_time = "exec1" if exec1.cpu_time <= exec2.cpu_time else "exec2"
-            best_cpu_ratio = "21" if comp.cpu_time_ratio <= comp.cpu_time_ratio_inverse else "12"
+            # Determine best execution time and CPU time (only when genuinely different)
+            best_exec_time = "exec1" if exec1.total_execution_time < exec2.total_execution_time else ("exec2" if exec2.total_execution_time < exec1.total_execution_time else None)
+            best_cpu_time = "exec1" if exec1.cpu_time < exec2.cpu_time else ("exec2" if exec2.cpu_time < exec1.cpu_time else None)
             
             # Format values
             exec1_time_str = self._format_time(exec1.total_execution_time)
@@ -770,34 +956,97 @@ class TieredComparisonAnalyzer:
             exec1_cpu_time_str = self._format_time(exec1.cpu_time)
             exec2_cpu_time_str = self._format_time(exec2.cpu_time)
             
+            # Format differences with appropriate sign and color
+            exec_time_diff_str = self._format_time(abs(comp.execution_time_diff))
+            exec_time_diff_class = "positive-diff" if comp.execution_time_diff > 0 else "negative-diff" if comp.execution_time_diff < 0 else ""
+            
+            worker_diff_str = f"{comp.worker_count_diff:+,}" if comp.worker_count_diff != 0 else "0"
+            worker_diff_class = "positive-diff" if comp.worker_count_diff > 0 else "negative-diff" if comp.worker_count_diff < 0 else ""
+            
+            cpu_diff_str = f"{comp.cpu_count_diff:+,}" if comp.cpu_count_diff != 0 else "0"
+            cpu_diff_class = "positive-diff" if comp.cpu_count_diff > 0 else "negative-diff" if comp.cpu_count_diff < 0 else ""
+            
+            cpu_time_diff_str = self._format_time(abs(comp.cpu_time_diff))
+            cpu_time_diff_class = "positive-diff" if comp.cpu_time_diff > 0 else "negative-diff" if comp.cpu_time_diff < 0 else ""
+            
+            # Add sign to time differences for display
+            if comp.execution_time_diff > 0:
+                exec_time_diff_str = f"+{exec_time_diff_str}"
+            elif comp.execution_time_diff < 0:
+                exec_time_diff_str = f"-{exec_time_diff_str}"
+            
+            if comp.cpu_time_diff > 0:
+                cpu_time_diff_str = f"+{cpu_time_diff_str}"
+            elif comp.cpu_time_diff < 0:
+                cpu_time_diff_str = f"-{cpu_time_diff_str}"
+            
+            # Format worker counts with straggler information
+            def format_worker_cell(workers, stragglers, tier_name, exec_name):
+                if workers == 0:
+                    return ('0', '')
+                elif stragglers > 0:
+                    return (f'{workers:,}[{stragglers}]', 'has-stragglers')
+                else:
+                    return (f'{workers:,}', '')
+            
+            # Format exec1 tier worker cells
+            exec1_small_w, exec1_small_w_class = format_worker_cell(
+                exec1.workers_by_tier.get('SMALL', 0), 
+                exec1.stragglers_by_tier.get('SMALL', 0), 
+                'SMALL', 'exec1'
+            )
+            exec1_medium_w, exec1_medium_w_class = format_worker_cell(
+                exec1.workers_by_tier.get('MEDIUM', 0), 
+                exec1.stragglers_by_tier.get('MEDIUM', 0), 
+                'MEDIUM', 'exec1'
+            )
+            exec1_large_w, exec1_large_w_class = format_worker_cell(
+                exec1.workers_by_tier.get('LARGE', 0), 
+                exec1.stragglers_by_tier.get('LARGE', 0), 
+                'LARGE', 'exec1'
+            )
+            
+            # Format exec2 tier worker cells
+            exec2_small_w, exec2_small_w_class = format_worker_cell(
+                exec2.workers_by_tier.get('SMALL', 0), 
+                exec2.stragglers_by_tier.get('SMALL', 0), 
+                'SMALL', 'exec2'
+            )
+            exec2_medium_w, exec2_medium_w_class = format_worker_cell(
+                exec2.workers_by_tier.get('MEDIUM', 0), 
+                exec2.stragglers_by_tier.get('MEDIUM', 0), 
+                'MEDIUM', 'exec2'
+            )
+            exec2_large_w, exec2_large_w_class = format_worker_cell(
+                exec2.workers_by_tier.get('LARGE', 0), 
+                exec2.stragglers_by_tier.get('LARGE', 0), 
+                'LARGE', 'exec2'
+            )
+
             html += f"""
             <tr>
                 <td><strong>{comp.migration_id}</strong></td>
                 <td class="number {'best-time' if best_exec_time == 'exec1' else ''}">{exec1_time_str}</td>
                 <td class="number {'best-time' if best_exec_time == 'exec2' else ''}">{exec2_time_str}</td>
-                <td class="number {'best-ratio' if best_exec_ratio == '12' else ''}">{comp.execution_time_ratio_inverse:.2f}</td>
-                <td class="number {'best-ratio' if best_exec_ratio == '21' else ''}">{comp.execution_time_ratio:.2f}</td>
+                <td class="number {exec_time_diff_class}">{exec_time_diff_str}</td>
                 <td class="number">{exec1.total_workers:,}</td>
                 <td class="number">{exec2.total_workers:,}</td>
-                <td class="number">{comp.worker_count_ratio_inverse:.2f}</td>
-                <td class="number">{comp.worker_count_ratio:.2f}</td>
+                <td class="number {worker_diff_class}">{worker_diff_str}</td>
                 <td class="number">{exec1.total_cpus:,}</td>
                 <td class="number">{exec2.total_cpus:,}</td>
-                <td class="number">{comp.cpu_count_ratio_inverse:.2f}</td>
-                <td class="number">{comp.cpu_count_ratio:.2f}</td>
+                <td class="number {cpu_diff_class}">{cpu_diff_str}</td>
                 <td class="number {'best-time' if best_cpu_time == 'exec1' else ''}">{exec1_cpu_time_str}</td>
                 <td class="number {'best-time' if best_cpu_time == 'exec2' else ''}">{exec2_cpu_time_str}</td>
-                <td class="number {'best-ratio' if best_cpu_ratio == '12' else ''}">{comp.cpu_time_ratio_inverse:.2f}</td>
-                <td class="number {'best-ratio' if best_cpu_ratio == '21' else ''}">{comp.cpu_time_ratio:.2f}</td>
-                <td class="number">{exec1.workers_by_tier.get('SMALL', 0):,}</td>
-                <td class="number">{exec1.workers_by_tier.get('MEDIUM', 0):,}</td>
-                <td class="number">{exec1.workers_by_tier.get('LARGE', 0):,}</td>
+                <td class="number {cpu_time_diff_class}">{cpu_time_diff_str}</td>
+                <td class="number {exec1_small_w_class}">{exec1_small_w}</td>
+                <td class="number {exec1_medium_w_class}">{exec1_medium_w}</td>
+                <td class="number {exec1_large_w_class}">{exec1_large_w}</td>
                 <td class="number">{exec1.cpus_by_tier.get('SMALL', 0):,}</td>
                 <td class="number">{exec1.cpus_by_tier.get('MEDIUM', 0):,}</td>
                 <td class="number">{exec1.cpus_by_tier.get('LARGE', 0):,}</td>
-                <td class="number">{exec2.workers_by_tier.get('SMALL', 0):,}</td>
-                <td class="number">{exec2.workers_by_tier.get('MEDIUM', 0):,}</td>
-                <td class="number">{exec2.workers_by_tier.get('LARGE', 0):,}</td>
+                <td class="number {exec2_small_w_class}">{exec2_small_w}</td>
+                <td class="number {exec2_medium_w_class}">{exec2_medium_w}</td>
+                <td class="number {exec2_large_w_class}">{exec2_large_w}</td>
                 <td class="number">{exec2.cpus_by_tier.get('SMALL', 0):,}</td>
                 <td class="number">{exec2.cpus_by_tier.get('MEDIUM', 0):,}</td>
                 <td class="number">{exec2.cpus_by_tier.get('LARGE', 0):,}</td>
@@ -811,16 +1060,94 @@ class TieredComparisonAnalyzer:
 <div class="aggregate">
     <h2>Legend</h2>
     <p><span style="background-color: #c8e6c9; padding: 2px 6px; border-radius: 3px;">Green highlighting</span> indicates the best (lowest) execution time, CPU time, and their corresponding best ratios for each migration.</p>
-    <p><strong>Ratio Interpretation:</strong></p>
+    <p><strong>Column Abbreviations:</strong></p>
     <ul>
-        <li><strong>1/2 > 1.0:</strong> Execution 1 took longer (Execution 2 is faster)</li>
-        <li><strong>2/1 < 1.0:</strong> Execution 2 took less time (Execution 2 is faster)</li>
-        <li><strong>Higher 1/2 or Lower 2/1 = Better Execution 2 Performance</strong></li>
+        <li><strong>W:</strong> Workers (number of workers allocated to each tier)</li>
+        <li><strong>C:</strong> CPUs/Cores (total threads allocated to each tier = workers × threads per worker)</li>
+    </ul>
+    <p><strong>Straggler Information:</strong></p>
+    <ul>
+        <li><strong>Format:</strong> Total workers shown as "total[stragglers]" (e.g., "15[3]" = 15 workers, 3 stragglers)</li>
+        <li><span style="background-color: #ffcccc; padding: 2px 6px; border-radius: 3px;">Light red background</span> indicates cells with straggler workers</li>
+    </ul>
+    <p><strong>Difference Interpretation (Exec2 - Exec1):</strong></p>
+    <ul>
+        <li><span style="background-color: #add8e6; padding: 2px 6px; border-radius: 3px;">Light blue</span> indicates positive differences (Exec2 > Exec1)</li>
+        <li><span style="background-color: #fff8dc; padding: 2px 6px; border-radius: 3px;">Light yellow</span> indicates negative differences (Exec2 < Exec1)</li>
+        <li><strong>Positive execution time difference:</strong> Exec2 took longer</li>
+        <li><strong>Negative execution time difference:</strong> Exec2 was faster</li>
     </ul>
 </div>
 
 </body>
 </html>"""
+        
+        return html
+
+    def _generate_config_comparison_html(self, comparisons: List[TieredComparisonResult], exec1_name: str = None, exec2_name: str = None) -> str:
+        """Generate HTML for configuration comparison section."""
+        if not comparisons:
+            return "<p>No migrations available for configuration comparison.</p>"
+        
+        # Configuration keys to compare (as requested by user)
+        config_keys = [
+            'small_tier_max_sstable_size_gb',
+            'small_tier_thread_subset_max_size_floor_gb', 
+            'small_tier_worker_num_threads',
+            'medium_tier_max_sstable_size_gb',
+            'medium_tier_worker_num_threads',
+            'optimize_packing_medium_subsets',
+            'execution_mode',
+            'max_concurrent_workers'
+        ]
+        
+        # Use first comparison to get configuration values (should be same across all migrations in an execution)
+        first_comp = comparisons[0]
+        config_comparison = first_comp.get_config_comparison(config_keys)
+        
+        exec1_short = exec1_name if exec1_name else "Exec1"
+        exec2_short = exec2_name if exec2_name else "Exec2"
+        
+        html = f"""
+        <table style="width: 100%; max-width: 800px;">
+            <thead>
+                <tr>
+                    <th style="text-align: left; width: 40%;">Configuration Parameter</th>
+                    <th style="text-align: center; width: 25%;">{exec1_short}</th>
+                    <th style="text-align: center; width: 25%;">{exec2_short}</th>
+                    <th style="text-align: center; width: 10%;">Status</th>
+                </tr>
+            </thead>
+            <tbody>"""
+        
+        for key, comparison in config_comparison.items():
+            exec1_value = comparison['exec1']
+            exec2_value = comparison['exec2']
+            is_same = comparison['same']
+            
+            # Format None values
+            exec1_display = exec1_value if exec1_value is not None else "N/A"
+            exec2_display = exec2_value if exec2_value is not None else "N/A"
+            
+            status_class = "config-same" if is_same else "config-different"
+            status_text = "✓" if is_same else "✗"
+            status_title = "Same configuration" if is_same else "Different configuration"
+            
+            html += f"""
+                <tr class="{status_class}">
+                    <td><strong>{key}</strong></td>
+                    <td style="text-align: center;">{exec1_display}</td>
+                    <td style="text-align: center;">{exec2_display}</td>
+                    <td style="text-align: center;" title="{status_title}">{status_text}</td>
+                </tr>"""
+        
+        html += """
+            </tbody>
+        </table>
+        <p><strong>Legend:</strong> 
+            <span style="background-color: #e8f5e8; padding: 2px 6px; border-radius: 3px;">Green</span> = Same configuration, 
+            <span style="background-color: #ffe8e8; padding: 2px 6px; border-radius: 3px;">Light red</span> = Different configuration
+        </p>"""
         
         return html
 
