@@ -264,6 +264,43 @@ class MigrationRunner:
             logger.error(f"Failed to download from S3 for {migration_id}: {e}")
             return None
     
+    def check_metadata_exists(self, migration_id: str) -> bool:
+        """Check if metadata exists in S3 for the given migration ID.
+        
+        Args:
+            migration_id: The migration ID (e.g., 'mig119')
+            
+        Returns:
+            bool: True if metadata exists, False otherwise
+        """
+        logger.info(f"Checking if metadata exists for migration ID: {migration_id}")
+        
+        if not self.s3_client:
+            self.s3_client = boto3.client('s3')
+        
+        # Key prefix pattern: mig<numericID>/metadata/subsets/calculationMetadata/desc
+        key_prefix = f"{migration_id}/metadata/subsets/calculationMetadata/desc"
+        
+        try:
+            # List objects with the specific prefix
+            response = self.s3_client.list_objects_v2(
+                Bucket=self.bucket_name,
+                Prefix=key_prefix,
+                MaxKeys=1  # We only need to know if at least one object exists
+            )
+            
+            # Check if any objects were found
+            if 'Contents' in response and len(response['Contents']) > 0:
+                logger.info(f"Metadata found for {migration_id}: {response['Contents'][0]['Key']}")
+                return True
+            else:
+                logger.warning(f"No metadata found for {migration_id} with prefix: {key_prefix}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Failed to check metadata existence for {migration_id}: {e}")
+            return False
+    
     def organize_migration_outputs(self, migration_id: str, original_output_dir: str, execution_name: str) -> dict:
         """Organize migration outputs into the new directory structure.
         
@@ -522,6 +559,7 @@ class MigrationRunner:
         
         successful_migrations = []
         failed_migrations = []
+        skipped_migrations = []
         migration_results = {}  # Track output files for each successful migration
         
         for migration_num in range(start_id, end_id + 1):
@@ -531,6 +569,12 @@ class MigrationRunner:
             try:
                 # Set environment variables for this specific migration
                 self.set_environment_variables(migration_id)
+                
+                # Check if metadata exists in S3 before proceeding
+                if not self.check_metadata_exists(migration_id):
+                    logger.warning(f"Skipping {migration_id}: metadata not found in S3")
+                    skipped_migrations.append(migration_id)
+                    continue
                 
                 # Execute Go command
                 if not self.execute_go_command(migration_id):
@@ -574,6 +618,7 @@ class MigrationRunner:
         logger.info(f"Migration processing complete:")
         logger.info(f"  Successful: {len(successful_migrations)} - {successful_migrations}")
         logger.info(f"  Failed: {len(failed_migrations)} - {failed_migrations}")
+        logger.info(f"  Skipped (no metadata): {len(skipped_migrations)} - {skipped_migrations}")
         
         return successful_migrations, failed_migrations, migration_results
     

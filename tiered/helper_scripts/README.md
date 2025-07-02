@@ -443,11 +443,14 @@ simulation:
 For each migration ID in the specified range (e.g., `mig100` to `mig200`) with execution name `performance_test`:
 
 1. **Environment Setup**: Set all `MIGRATION_*` environment variables
-2. **Go Execution**: Run `./mba/migration-bucket-accessor calc_subsets`
-3. **S3 Download**: Download from `s3://bucket/mig100/metadata/subsets/mytieredcalc/` to `downloadedSubsetDefinitions/mig100/`
-4. **Simulation**: Execute `run_multi_tier_simulation.py` with configured options
-5. **Output Organization**: Move results to `tiered/output/performance_test/mig100/`
-6. **Report Generation**: Create execution summary reports in `tiered/output/performance_test/exec_reports/`
+2. **Metadata Check**: Verify that metadata exists in S3 at `s3://bucket/mig100/metadata/subsets/calculationMetadata/desc*`
+   - If metadata is **missing**, the migration is **skipped** (not failed) and logged appropriately
+   - If metadata **exists**, processing continues
+3. **Go Execution**: Run `./mba/migration-bucket-accessor calc_subsets`
+4. **S3 Download**: Download from `s3://bucket/mig100/metadata/subsets/mytieredcalc/` to `downloadedSubsetDefinitions/mig100/`
+5. **Simulation**: Execute `run_multi_tier_simulation.py` with configured options
+6. **Output Organization**: Move results to `tiered/output/performance_test/mig100/`
+7. **Report Generation**: Create execution summary reports in `tiered/output/performance_test/exec_reports/`
 
 ### Output Structure
 
@@ -486,6 +489,10 @@ tiered/
 2. **Invalid S3 bucket**: Check bucket name and permissions
 3. **Go program not found**: Verify `./mba/migration-bucket-accessor` exists
 4. **Template errors**: Check `{migration_id}` placeholder usage
+5. **Missing metadata**: Some migration IDs may not have metadata in S3
+   - Check the execution logs for "Skipped (no metadata)" messages
+   - Skipped migrations are logged but don't cause execution failure
+   - Metadata is checked at: `s3://bucket/mig<ID>/metadata/subsets/calculationMetadata/desc*`
 
 #### Validation
 
