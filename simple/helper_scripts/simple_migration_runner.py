@@ -265,6 +265,69 @@ class SimpleMigrationRunner:
             logger.error(f"Failed to download from S3: {e}")
             return None
     
+    def check_metadata_exists(self, migration_id: str) -> bool:
+        """Check if metadata exists in S3 for the given migration ID.
+        
+        For simple simulation, we need to check for both:
+        1. mig<numericID>/metadata/subsets/calculationMetadata/desc
+        2. mig<numericID>/metadata/GlobalStateSummary
+        
+        Args:
+            migration_id: The migration ID (e.g., 'mig119')
+            
+        Returns:
+            bool: True if both metadata files exist, False otherwise
+        """
+        logger.info(f"Checking if metadata exists for migration ID: {migration_id}")
+        
+        if not self.s3_client:
+            self.s3_client = boto3.client('s3')
+        
+        # Check for calculationMetadata/desc files
+        calc_metadata_prefix = f"{migration_id}/metadata/subsets/calculationMetadata/desc"
+        
+        # Check for GlobalStateSummary files
+        global_state_prefix = f"{migration_id}/metadata/GlobalStateSummary"
+        
+        try:
+            # Check for calculationMetadata/desc files
+            calc_response = self.s3_client.list_objects_v2(
+                Bucket=self.bucket_name,
+                Prefix=calc_metadata_prefix,
+                MaxKeys=1
+            )
+            
+            calc_metadata_exists = 'Contents' in calc_response and len(calc_response['Contents']) > 0
+            
+            if calc_metadata_exists:
+                logger.info(f"Calculation metadata found for {migration_id}: {calc_response['Contents'][0]['Key']}")
+            else:
+                logger.warning(f"No calculation metadata found for {migration_id} with prefix: {calc_metadata_prefix}")
+                return False
+            
+            # Check for GlobalStateSummary files
+            global_response = self.s3_client.list_objects_v2(
+                Bucket=self.bucket_name,
+                Prefix=global_state_prefix,
+                MaxKeys=1
+            )
+            
+            global_state_exists = 'Contents' in global_response and len(global_response['Contents']) > 0
+            
+            if global_state_exists:
+                logger.info(f"Global state summary found for {migration_id}: {global_response['Contents'][0]['Key']}")
+            else:
+                logger.warning(f"No global state summary found for {migration_id} with prefix: {global_state_prefix}")
+                return False
+            
+            # Both files exist
+            logger.info(f"All required metadata found for {migration_id}")
+            return True
+                
+        except Exception as e:
+            logger.error(f"Failed to check metadata existence for {migration_id}: {e}")
+            return False
+    
     def run_simulation(self, migration_id: str, download_dir: str) -> tuple[bool, dict]:
         """Run the simple simulation on downloaded data."""
         logger.info(f"Running simple simulation for migration ID: {migration_id}")
@@ -368,6 +431,7 @@ class SimpleMigrationRunner:
         """Process a range of migration IDs."""
         successful = []
         failed = []
+        skipped = []
         migration_results = {}
         
         for migration_id_num in range(start_id, end_id + 1):
@@ -378,20 +442,26 @@ class SimpleMigrationRunner:
                 # Step 1: Set environment variables for this migration
                 self.set_environment_variables(migration_id)
                 
-                # Step 2: Execute Go command
+                # Step 2: Check if metadata exists in S3 before proceeding
+                if not self.check_metadata_exists(migration_id):
+                    logger.warning(f"Skipping {migration_id}: required metadata not found in S3")
+                    skipped.append(migration_id)
+                    continue
+                
+                # Step 3: Execute Go command
                 if not self.execute_go_command(migration_id):
                     logger.error(f"Go command failed for {migration_id}, skipping...")
                     failed.append(migration_id)
                     continue
                 
-                # Step 3: Download from S3
+                # Step 4: Download from S3
                 download_dir = self.download_from_s3(migration_id, execution_name)
                 if not download_dir:
                     logger.error(f"S3 download failed for {migration_id}, skipping...")
                     failed.append(migration_id)
                     continue
                 
-                # Step 4: Run simulation
+                # Step 5: Run simulation
                 sim_success, output_files = self.run_simulation(migration_id, download_dir)
                 if not sim_success:
                     logger.error(f"Simulation failed for {migration_id}")
@@ -406,9 +476,11 @@ class SimpleMigrationRunner:
                 logger.error(f"Error processing {migration_id}: {e}")
                 failed.append(migration_id)
         
-        logger.info(f"Processing complete. Successful: {len(successful)}, Failed: {len(failed)}")
+        logger.info(f"Processing complete. Successful: {len(successful)}, Failed: {len(failed)}, Skipped (no metadata): {len(skipped)}")
         if failed:
             logger.warning(f"Failed migrations: {failed}")
+        if skipped:
+            logger.warning(f"Skipped migrations (no metadata): {skipped}")
         
         return successful, failed, migration_results
     

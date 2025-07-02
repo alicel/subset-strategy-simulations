@@ -8,10 +8,15 @@ The simple migration runner automates the following workflow:
 
 1. **AWS SSO Login** - Authenticates with AWS using SSO
 2. **Environment Setup** - Loads configuration and sets environment variables
-3. **Go Command Execution** - Runs the migration-bucket-accessor to calculate subsets
-4. **S3 Download** - Downloads subset definition files from S3
-5. **Simple Simulation** - Runs the simple simulation on downloaded data
-6. **Reporting** - Generates execution reports and summaries
+3. **Metadata Check** - Verifies that required metadata exists in S3:
+   - `s3://bucket/mig<ID>/metadata/subsets/calculationMetadata/desc*`
+   - `s3://bucket/mig<ID>/metadata/GlobalStateSummary*`
+   - If either is **missing**, the migration is **skipped** (not failed) and logged appropriately
+   - If both **exist**, processing continues
+4. **Go Command Execution** - Runs the migration-bucket-accessor to calculate subsets
+5. **S3 Download** - Downloads subset definition files from S3
+6. **Simple Simulation** - Runs the simple simulation on downloaded data
+7. **Reporting** - Generates execution reports and summaries
 
 ## Files
 
@@ -246,6 +251,15 @@ Key differences from the tiered migration helper:
 - Check bucket name and permissions
 - Verify S3 path template matches your data structure
 - Ensure AWS credentials are valid
+
+### Missing Metadata Issues
+- Some migration IDs may not have required metadata in S3
+- Check the execution logs for "Skipped (no metadata)" messages
+- Skipped migrations are logged but don't cause execution failure
+- **Required metadata files for simple simulation:**
+  - `s3://bucket/mig<ID>/metadata/subsets/calculationMetadata/desc*`
+  - `s3://bucket/mig<ID>/metadata/GlobalStateSummary*`
+- Both files must exist for processing to continue
 
 ### Execution Location Issues
 - **Error: "Go command not found"** - Ensure you're running from project root where `mba/` directory exists
