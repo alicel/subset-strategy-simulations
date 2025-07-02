@@ -190,7 +190,8 @@ simulation:
     straggler_threshold: 20.0           # --straggler-threshold (percentage)
     summary_only: false                 # --summary-only flag
     no_stragglers: false                # --no-stragglers flag
-    sequential_execution: false         # --sequential-execution flag (process tiers sequentially)
+    execution_mode: "concurrent"        # --execution-mode: concurrent, sequential, or round_robin
+    max_concurrent_workers: 20          # --max-concurrent-workers (required for round_robin mode)
   
   # Output configuration
   output:
@@ -239,7 +240,8 @@ Maps directly to `run_multi_tier_simulation.py` CLI options.
 - `straggler_threshold`: Percentage threshold for straggler detection
 - `summary_only`: Generate only summary visualizations
 - `no_stragglers`: Skip straggler analysis
-- `sequential_execution`: Process tiers sequentially (LARGE→MEDIUM→SMALL) instead of concurrently
+- `execution_mode`: Worker scheduling mode - `concurrent` (all tiers parallel), `sequential` (LARGE→MEDIUM→SMALL), or `round_robin` (global limit with round-robin allocation)
+- `max_concurrent_workers`: Total worker limit across all tiers (required for round_robin mode)
 
 **Output Options:**
 - `output_name`: Base name for output files (migration ID appended automatically)
@@ -337,10 +339,24 @@ migration:
 
 simulation:
   analysis:
-    sequential_execution: true   # Process LARGE→MEDIUM→SMALL sequentially
+    execution_mode: "sequential"  # Process LARGE→MEDIUM→SMALL sequentially
     straggler_threshold: 25.0
   output:
     output_name: "sequential_analysis"
+```
+
+#### Round-Robin Execution Configuration
+```yaml
+migration:
+  # ... migration settings ...
+
+simulation:
+  analysis:
+    execution_mode: "round_robin"    # Round-robin allocation across tiers
+    max_concurrent_workers: 15       # Total workers across all tiers
+    straggler_threshold: 20.0
+  output:
+    output_name: "round_robin_analysis"
 ```
 
 ### Execution Flow

@@ -9,10 +9,17 @@ from visualization.detailed_visualization import save_detailed_visualization
 import math
 import sys
 import random
+from enum import Enum
 
 class SimulationError(Exception):
     """Custom exception for simulation errors"""
     pass
+
+class ExecutionMode(Enum):
+    """Enum for different execution modes"""
+    CONCURRENT = "concurrent"
+    SEQUENTIAL = "sequential"
+    ROUND_ROBIN = "round_robin"
 
 @dataclass
 class TierConfig:
@@ -177,10 +184,13 @@ class Worker:
         }
 
 class MultiTierSimulation:
-    def __init__(self, config: WorkerConfig, straggler_threshold_percent: float = 20.0, concurrent_execution: bool = True):
+    def __init__(self, config: WorkerConfig, straggler_threshold_percent: float = 20.0, 
+                 execution_mode: ExecutionMode = ExecutionMode.CONCURRENT, 
+                 max_concurrent_workers: int = None):
         self.config = config
         self.straggler_threshold_percent = straggler_threshold_percent
-        self.concurrent_execution = concurrent_execution  # New parameter for execution mode
+        self.execution_mode = execution_mode
+        self.max_concurrent_workers = max_concurrent_workers  # For round-robin mode
         self.current_time = 0.0
         self.active_workers: Dict[WorkerTier, List[Worker]] = {
             WorkerTier.SMALL: [],
@@ -188,17 +198,33 @@ class MultiTierSimulation:
             WorkerTier.LARGE: []
         }
         self.completed_workers: List[Worker] = []
-        # Store tuples of (completion_time, worker_id, worker) to ensure stable sorting
+        # Store tuples of (completion_time, counter, worker) to ensure stable sorting
         self.completion_events: List[Tuple[float, int, Worker]] = []
+        self.event_counter = 0  # Unique counter for heap stability
         self.simulation_completed = False
         
-    def can_add_worker(self, tier: WorkerTier) -> bool:
-        max_workers = {
-            WorkerTier.SMALL: self.config.small.max_workers,
-            WorkerTier.MEDIUM: self.config.medium.max_workers,
-            WorkerTier.LARGE: self.config.large.max_workers
+        # Round-robin specific state
+        self.round_robin_position = 0  # Current position in round-robin cycle
+        self.tier_order = [WorkerTier.LARGE, WorkerTier.MEDIUM, WorkerTier.SMALL]  # Round-robin order
+        self.tier_next_index: Dict[WorkerTier, int] = {  # Next subset index to process for each tier
+            WorkerTier.SMALL: 0,
+            WorkerTier.MEDIUM: 0,
+            WorkerTier.LARGE: 0
         }
-        return len(self.active_workers[tier]) < max_workers[tier]
+        
+    def can_add_worker(self, tier: WorkerTier) -> bool:
+        if self.execution_mode == ExecutionMode.ROUND_ROBIN:
+            # For round-robin, check global limit
+            total_active_workers = sum(len(workers) for workers in self.active_workers.values())
+            return total_active_workers < self.max_concurrent_workers
+        else:
+            # For concurrent/sequential, check per-tier limits
+            max_workers = {
+                WorkerTier.SMALL: self.config.small.max_workers,
+                WorkerTier.MEDIUM: self.config.medium.max_workers,
+                WorkerTier.LARGE: self.config.large.max_workers
+            }
+            return len(self.active_workers[tier]) < max_workers[tier]
     
     def get_num_threads(self, tier: WorkerTier) -> int:
         return {
@@ -212,8 +238,9 @@ class MultiTierSimulation:
         try:
             completion_time = worker.process_file(file)
             self.active_workers[tier].append(worker)
-            # Include worker_id in the heap tuple to ensure stable sorting
-            heappush(self.completion_events, (completion_time, worker.worker_id, worker))
+            # Include counter in the heap tuple to ensure stable sorting
+            heappush(self.completion_events, (completion_time, self.event_counter, worker))
+            self.event_counter += 1
             return worker
         except SimulationError as e:
             raise SimulationError(f"Error adding worker for tier {tier.value}: {str(e)}")
@@ -228,10 +255,14 @@ class MultiTierSimulation:
         if not files:
             raise SimulationError("No files provided for simulation")
         
-        if self.concurrent_execution:
+        if self.execution_mode == ExecutionMode.CONCURRENT:
             return self._run_concurrent_simulation(files)
-        else:
+        elif self.execution_mode == ExecutionMode.SEQUENTIAL:
             return self._run_sequential_simulation(files)
+        elif self.execution_mode == ExecutionMode.ROUND_ROBIN:
+            return self._run_round_robin_simulation(files)
+        else:
+            raise SimulationError(f"Unknown execution mode: {self.execution_mode}")
     
     def _run_concurrent_simulation(self, files: List[FileMetadata]) -> float:
         """Original parallel execution mode - all tiers can run simultaneously."""
@@ -346,18 +377,19 @@ class MultiTierSimulation:
                             continue
                 else:
                     # Re-add events from other tiers back to the queue (shouldn't happen in sequential mode)
-                    heappush(self.completion_events, (completion_time, completed_worker.worker_id, completed_worker))
+                    heappush(self.completion_events, (completion_time, self.event_counter, completed_worker))
+                    self.event_counter += 1
             
             # Wait for all remaining workers of this tier to complete
             remaining_events = []
             while self.completion_events:
-                completion_time, worker_id, completed_worker = heappop(self.completion_events)
+                completion_time, counter, completed_worker = heappop(self.completion_events)
                 if completed_worker.tier == tier:
                     self.current_time = completion_time
                     self.remove_worker(completed_worker)
                 else:
                     # Keep events from other tiers for later (shouldn't happen in sequential mode)
-                    remaining_events.append((completion_time, worker_id, completed_worker))
+                    remaining_events.append((completion_time, counter, completed_worker))
             
             # Restore any remaining events (shouldn't happen in sequential mode)
             for event in remaining_events:
@@ -373,6 +405,98 @@ class MultiTierSimulation:
         
         self.simulation_completed = True
         return self.current_time
+    
+    def _run_round_robin_simulation(self, files: List[FileMetadata]) -> float:
+        """Round-robin execution mode - allocate workers in round-robin across tiers with global limit."""
+        print(f"\nRound-robin execution mode: Max {self.max_concurrent_workers} concurrent workers across all tiers")
+        
+        # Group files by tier and sort within each tier by numeric index
+        files_by_tier: Dict[WorkerTier, List[FileMetadata]] = {
+            WorkerTier.SMALL: [],
+            WorkerTier.MEDIUM: [],
+            WorkerTier.LARGE: []
+        }
+        for file in files:
+            files_by_tier[file.tier].append(file)
+        
+        # Sort files within each tier by numeric subset ID for sequential processing
+        for tier in WorkerTier:
+            files_by_tier[tier].sort(key=lambda f: int(f.subset_id) if f.subset_id.isdigit() else float('inf'))
+        
+        # Track failed files to report at the end
+        failed_files = []
+        
+        # Initial allocation using round-robin
+        while self._has_remaining_files(files_by_tier) and self._get_total_active_workers() < self.max_concurrent_workers:
+            assigned = False
+            for _ in range(len(self.tier_order)):  # Try each tier once per round
+                current_tier = self.tier_order[self.round_robin_position]
+                
+                # Check if this tier has files to process
+                if files_by_tier[current_tier]:
+                    try:
+                        file = files_by_tier[current_tier].pop(0)
+                        self.add_worker(current_tier, file)
+                        assigned = True
+                        print(f"Round-robin: Assigned {current_tier.value} subset {file.subset_id} (total active: {self._get_total_active_workers()})")
+                    except SimulationError as e:
+                        print(f"Warning: Failed to process file {file.full_path}: {str(e)}", file=sys.stderr)
+                        failed_files.append((file, str(e)))
+                
+                # Move to next tier in round-robin
+                self.round_robin_position = (self.round_robin_position + 1) % len(self.tier_order)
+                
+                # If we're at capacity, break
+                if self._get_total_active_workers() >= self.max_concurrent_workers:
+                    break
+            
+            # If we couldn't assign any work in a full round, break to avoid infinite loop
+            if not assigned:
+                break
+        
+        # Process completion events and continue round-robin allocation
+        while self.completion_events:
+            completion_time, _, completed_worker = heappop(self.completion_events)
+            self.current_time = completion_time
+            self.remove_worker(completed_worker)
+            
+            # Continue round-robin allocation if there are remaining files
+            if self._has_remaining_files(files_by_tier):
+                # Try to assign new work using round-robin
+                assigned = False
+                attempts = 0
+                while not assigned and attempts < len(self.tier_order) and self._get_total_active_workers() < self.max_concurrent_workers:
+                    current_tier = self.tier_order[self.round_robin_position]
+                    
+                    if files_by_tier[current_tier]:
+                        try:
+                            file = files_by_tier[current_tier].pop(0)
+                            self.add_worker(current_tier, file)
+                            assigned = True
+                            print(f"Round-robin: Assigned {current_tier.value} subset {file.subset_id} (total active: {self._get_total_active_workers()})")
+                        except SimulationError as e:
+                            print(f"Warning: Failed to process file {file.full_path}: {str(e)}", file=sys.stderr)
+                            failed_files.append((file, str(e)))
+                    
+                    # Move to next tier in round-robin
+                    self.round_robin_position = (self.round_robin_position + 1) % len(self.tier_order)
+                    attempts += 1
+        
+        if failed_files:
+            print("\nWarning: Some files failed to process:", file=sys.stderr)
+            for file, error in failed_files:
+                print(f"- {file.full_path}: {error}", file=sys.stderr)
+        
+        self.simulation_completed = True
+        return self.current_time
+    
+    def _has_remaining_files(self, files_by_tier: Dict[WorkerTier, List[FileMetadata]]) -> bool:
+        """Check if there are any remaining files to process across all tiers."""
+        return any(files for files in files_by_tier.values())
+    
+    def _get_total_active_workers(self) -> int:
+        """Get the total number of active workers across all tiers."""
+        return sum(len(workers) for workers in self.active_workers.values())
     
     def export_data_to_csv(self, base_filename: str = "simulation_data"):
         """Export simulation data to CSV files for automated analysis."""
@@ -679,7 +803,8 @@ class MultiTierSimulation:
                 "medium_max_workers": self.config.medium.max_workers,
                 "large_max_workers": self.config.large.max_workers,
                 "straggler_threshold_percent": self.straggler_threshold_percent,
-                "concurrent_execution": self.concurrent_execution
+                "execution_mode": self.execution_mode.value,
+                "max_concurrent_workers": self.max_concurrent_workers
             },
             "by_tier": {}
         }

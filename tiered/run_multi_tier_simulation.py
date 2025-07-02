@@ -1,4 +1,4 @@
-from core.worker_simulation import WorkerConfig, TierConfig, MultiTierSimulation
+from core.worker_simulation import WorkerConfig, TierConfig, MultiTierSimulation, ExecutionMode
 from core.file_processor import parse_input_directory
 import argparse
 import sys
@@ -37,7 +37,12 @@ def save_configuration(args, config, config_file, total_time, num_files):
         # Analysis configuration
         f.write("Analysis Configuration:\n")
         f.write("-" * 22 + "\n")
-        f.write(f"Execution mode: {'Sequential (LARGE->MEDIUM->SMALL)' if args.sequential_execution else 'Concurrent (all tiers parallel)'}\n")
+        execution_mode_desc = {
+            'concurrent': 'Concurrent (all tiers parallel)',
+            'sequential': 'Sequential (LARGE->MEDIUM->SMALL)',
+            'round_robin': f'Round-robin (max {args.max_concurrent_workers} total workers)'
+        }
+        f.write(f"Execution mode: {execution_mode_desc.get(args.execution_mode, args.execution_mode)}\n")
         f.write(f"Straggler threshold: {args.straggler_threshold:.1f}% above average\n")
         f.write(f"Straggler analysis: {'Disabled' if args.no_stragglers else 'Enabled'}\n")
         f.write(f"CSV export: {'Disabled' if args.no_csv else 'Enabled'}\n")
@@ -92,8 +97,10 @@ def save_configuration(args, config, config_file, total_time, num_files):
             cmd_parts.append(f"--output-dir {args.output_dir}")
         if args.detailed_page_size != 30:
             cmd_parts.append(f"--detailed-page-size {args.detailed_page_size}")
-        if args.sequential_execution:
-            cmd_parts.append("--sequential-execution")
+        if args.execution_mode != 'concurrent':
+            cmd_parts.append(f"--execution-mode {args.execution_mode}")
+        if args.execution_mode == 'round_robin' and args.max_concurrent_workers:
+            cmd_parts.append(f"--max-concurrent-workers {args.max_concurrent_workers}")
         
         # Format command line nicely (break long lines)
         if len(" ".join(cmd_parts)) > 80:
@@ -129,10 +136,18 @@ def main():
                        help='Directory to store output files (default: output_files)')
     parser.add_argument('--detailed-page-size', type=int, default=30,
                        help='Maximum number of workers per page in detailed visualization (default: 30, set to 0 to disable pagination)')
-    parser.add_argument('--sequential-execution', action='store_true', 
-                       help='Process tiers sequentially (LARGE->MEDIUM->SMALL) instead of concurrently (default: concurrent)')
+    parser.add_argument('--execution-mode', choices=['concurrent', 'sequential', 'round_robin'], default='concurrent',
+                       help='Worker execution mode: concurrent (all tiers parallel), sequential (LARGE->MEDIUM->SMALL), or round_robin (global limit with round-robin allocation)')
+    parser.add_argument('--max-concurrent-workers', type=int, default=None,
+                       help='Maximum number of concurrent workers across all tiers (required for round-robin mode)')
     
     args = parser.parse_args()
+    
+    # Validate arguments
+    if args.execution_mode == 'round_robin' and args.max_concurrent_workers is None:
+        parser.error("--max-concurrent-workers is required when using round-robin execution mode")
+    if args.max_concurrent_workers is not None and args.max_concurrent_workers <= 0:
+        parser.error("--max-concurrent-workers must be positive")
     
     # Configure the tiers
     config = WorkerConfig(
@@ -157,8 +172,12 @@ def main():
     print("=" * 50)
     
     # Print execution mode
-    execution_mode = "Sequential (LARGE->MEDIUM->SMALL)" if args.sequential_execution else "Concurrent (all tiers parallel)"
-    print(f"Execution mode: {execution_mode}")
+    execution_mode_desc = {
+        'concurrent': 'Concurrent (all tiers parallel)',
+        'sequential': 'Sequential (LARGE->MEDIUM->SMALL)',
+        'round_robin': f'Round-robin (max {args.max_concurrent_workers} total workers)'
+    }
+    print(f"Execution mode: {execution_mode_desc.get(args.execution_mode, args.execution_mode)}")
     
     for tier in ['SMALL', 'MEDIUM', 'LARGE']:
         threads = getattr(args, f'{tier.lower()}_threads')
@@ -170,10 +189,12 @@ def main():
     
     # Create and run simulation
     print("\nStarting simulation...")
+    execution_mode = ExecutionMode(args.execution_mode)
     simulation = MultiTierSimulation(
         config, 
         straggler_threshold_percent=args.straggler_threshold,
-        concurrent_execution=not args.sequential_execution  # Invert the flag since the parameter is for sequential mode
+        execution_mode=execution_mode,
+        max_concurrent_workers=args.max_concurrent_workers
     )
     total_time = simulation.run_simulation(files)
     

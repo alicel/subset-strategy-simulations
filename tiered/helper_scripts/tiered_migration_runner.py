@@ -402,8 +402,22 @@ class MigrationRunner:
             command.append('--summary-only')
         if analysis_config.get('no_stragglers', False):
             command.append('--no-stragglers')
+        # Execution mode (default to concurrent for backward compatibility)
+        execution_mode = analysis_config.get('execution_mode', 'concurrent')
+        if execution_mode != 'concurrent':
+            command.extend(['--execution-mode', execution_mode])
+        
+        # Max concurrent workers for round-robin mode
+        if execution_mode == 'round_robin':
+            max_concurrent_workers = analysis_config.get('max_concurrent_workers')
+            if max_concurrent_workers:
+                command.extend(['--max-concurrent-workers', str(max_concurrent_workers)])
+            else:
+                logger.warning(f"Round-robin execution mode specified but max_concurrent_workers not set for {migration_id}")
+        
+        # Legacy support for sequential_execution flag
         if analysis_config.get('sequential_execution', False):
-            command.append('--sequential-execution')
+            command.extend(['--execution-mode', 'sequential'])
         
         # Output Options
         output_config = simulation_config.get('output', {})
@@ -912,7 +926,8 @@ def create_sample_config():
                 "straggler_threshold": 20.0,
                 "summary_only": False,
                 "no_stragglers": False,
-                "sequential_execution": False
+                "execution_mode": "concurrent",
+                "max_concurrent_workers": 20
             },
             "output": {
                 "output_name": "tiered_migration_simulation",
@@ -958,8 +973,10 @@ def create_sample_config():
     print("  Output Options: naming, directory structure, CSV export, pagination")
     print()
     print("Execution modes:")
-    print("  sequential_execution: false (default) - All tiers process concurrently")
-    print("  sequential_execution: true - Process tiers sequentially (LARGE->MEDIUM->SMALL)")
+    print("  execution_mode: 'concurrent' (default) - All tiers process concurrently")
+    print("  execution_mode: 'sequential' - Process tiers sequentially (LARGE->MEDIUM->SMALL)")
+    print("  execution_mode: 'round_robin' - Round-robin allocation with global worker limit")
+    print("  max_concurrent_workers: Required for round_robin mode - total worker limit across all tiers")
 
 def find_config_file(config_path: str = None) -> str:
     """Find the configuration file in the current directory or helper_scripts directory.

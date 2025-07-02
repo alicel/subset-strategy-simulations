@@ -151,6 +151,13 @@ python migration_runner.py --start-id 100 --end-id 102  # This will fail
 - `--summary-only` - Show only summary and global timeline, skip detailed views
 - `--no-stragglers` - Skip straggler analysis and reporting
 
+#### Execution Mode Options
+- `--execution-mode {concurrent,sequential,round_robin}` - Worker scheduling strategy (default: concurrent)
+  - **concurrent**: All tiers can run workers simultaneously (respects per-tier max limits)
+  - **sequential**: Process tiers one at a time in order LARGE → MEDIUM → SMALL
+  - **round_robin**: Round-robin allocation across tiers with global worker limit
+- `--max-concurrent-workers <int>` - Maximum total concurrent workers across all tiers (required for round_robin mode)
+
 #### Output Options
 - `--output-name <string>` - Base name for output files (default: "simulation_results")
 - `--output-dir <path>` - Directory to store output files (default: output_files)
@@ -194,6 +201,28 @@ python run_multi_tier_simulation.py test_data/ \
 ```bash
 python run_multi_tier_simulation.py test_data/ \
     --detailed-page-size 0
+```
+
+**Sequential execution (LARGE → MEDIUM → SMALL):**
+```bash
+python run_multi_tier_simulation.py test_data/ \
+    --execution-mode sequential
+```
+
+**Round-robin execution with global worker limit:**
+```bash
+python run_multi_tier_simulation.py test_data/ \
+    --execution-mode round_robin \
+    --max-concurrent-workers 10
+```
+
+**Round-robin with custom configuration:**
+```bash
+python run_multi_tier_simulation.py test_data/ \
+    --execution-mode round_robin \
+    --max-concurrent-workers 15 \
+    --straggler-threshold 25.0 \
+    --output-name round_robin_analysis
 ```
 
 ## Output Files
@@ -262,6 +291,58 @@ For simulations with hundreds or thousands of workers, the detailed visualizatio
 - **Consistency**: Reproducible results across multiple runs
 - **Validation**: Performance analysis reflects actual production constraints
 - **Debugging**: Issues in simulation correspond to real system bottlenecks
+
+## Execution Modes
+
+The simulation supports three different worker scheduling strategies:
+
+### 1. Concurrent Mode (Default)
+**Behavior**: All tiers can run workers simultaneously, respecting individual tier limits.
+
+**Worker Allocation**: 
+- SMALL workers: Up to `--small-max-workers` (default: 4)
+- MEDIUM workers: Up to `--medium-max-workers` (default: 6) 
+- LARGE workers: Up to `--large-max-workers` (default: 10)
+- **Total possible concurrent workers**: Up to 20 (4+6+10)
+
+**Use Case**: Maximum parallelism when you have sufficient resources for all tiers simultaneously.
+
+### 2. Sequential Mode
+**Behavior**: Process one tier at a time in order: LARGE → MEDIUM → SMALL.
+
+**Worker Allocation**:
+- LARGE tier: Process all LARGE files first using up to `--large-max-workers`
+- MEDIUM tier: After all LARGE files complete, process MEDIUM files using up to `--medium-max-workers`
+- SMALL tier: After all MEDIUM files complete, process SMALL files using up to `--small-max-workers`
+
+**Use Case**: Resource-constrained environments or when tier dependencies exist.
+
+### 3. Round-Robin Mode  
+**Behavior**: Allocate workers in round-robin across tiers with a global worker limit.
+
+**Worker Allocation**:
+- **Global limit**: Never exceed `--max-concurrent-workers` total workers across all tiers
+- **Round-robin pattern**: LARGE → MEDIUM → SMALL → LARGE → MEDIUM → SMALL...
+- **Sequential within tiers**: Subsets within each tier processed in numerical order
+- **Adaptive**: Automatically skips empty tiers and continues with available tiers
+
+**Examples**:
+```
+# With max-concurrent-workers=5 and files in all tiers:
+Worker 1: LARGE subset-0
+Worker 2: MEDIUM subset-0  
+Worker 3: SMALL subset-0
+Worker 4: LARGE subset-1
+Worker 5: MEDIUM subset-1
+# When LARGE subset-0 completes: → SMALL subset-1
+```
+
+**Edge Case Handling**:
+- **Missing tiers**: If no LARGE files exist, alternates between MEDIUM and SMALL
+- **Tier exhaustion**: When LARGE files finish, continues round-robin with MEDIUM ↔ SMALL
+- **Single tier**: If only MEDIUM files exist, processes them sequentially up to the global limit
+
+**Use Case**: Balanced resource utilization across tiers while maintaining global resource limits.
 
 ### CSV Data Export (when `--no-csv` is not used)
 
