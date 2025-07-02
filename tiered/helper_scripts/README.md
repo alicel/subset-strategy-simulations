@@ -33,21 +33,30 @@ The `tiered_migration_runner.py` script automates the process of running the tie
 2. Edit `migration_config_sample.yaml` with your specific settings:
    ```yaml
    migration:
-     cloud_provider: "AWS"
+     # Credentials
      access_key: "YOUR_ACCESS_KEY_HERE"
-     bucket: "your-bucket-name"
-     log_level: "DEBUG"
-     medium_tier_max_sstable_size_gb: 50
-     medium_tier_worker_num_threads: 6
-     optimize_packing_medium_subsets: false
-     region: "your-aws-region"
      secret_key: "YOUR_SECRET_KEY_HERE"
+     
+     # Basic Settings
+     bucket: "your-bucket-name"
+     region: "your-aws-region"
+     log_level: "DEBUG"
+     
+     # General Parameters
+     max_num_sstables_per_subset: 250
+     subset_calculation_label: "mytieredcalc"
+     
+     # Small Tier Parameters
      small_tier_max_sstable_size_gb: 10
      small_tier_thread_subset_max_size_floor_gb: 2
      small_tier_worker_num_threads: 4
-     subset_calculation_label: "mytieredcalc"
-     subset_calculation_strategy: "tiered"
-     max_num_sstables_per_subset: 250
+     
+     # Medium Tier Parameters
+     medium_tier_max_sstable_size_gb: 50
+     medium_tier_worker_num_threads: 6
+     
+     # Optimization
+     optimize_packing_medium_subsets: false
    ```
 
 3. **Important**: After customizing the configuration, rename the file to the default name that the script expects:
@@ -149,21 +158,30 @@ The configuration file supports both YAML and JSON formats and controls all aspe
 ```yaml
 # Migration-specific environment variables
 migration:
-  cloud_provider: "AWS"                                    # CLOUD_PROVIDER
+  # Credentials
   access_key: "YOUR_ACCESS_KEY_HERE"                       # MIGRATION_ACCESS_KEY
+  secret_key: "YOUR_SECRET_KEY_HERE"                       # MIGRATION_SECRET_KEY
+  
+  # Basic Settings
   bucket: "alice-sst-sdl-test"                            # MIGRATION_BUCKET
-  log_level: "DEBUG"                                       # MIGRATION_LOG_LEVEL
-  medium_tier_max_sstable_size_gb: 50                     # MIGRATION_MEDIUM_TIER_MAX_SSTABLE_SIZE_GB
-  medium_tier_worker_num_threads: 6                       # MIGRATION_MEDIUM_TIER_WORKER_NUM_THREADS
-  optimize_packing_medium_subsets: false                  # MIGRATION_OPTIMIZE_PACKING_MEDIUM_SUBSETS
   region: "eu-west-1"                                     # MIGRATION_REGION
-  secret_key: "YOUR_SECRET_KEY_HERE"                      # MIGRATION_SECRET_KEY
+  log_level: "DEBUG"                                       # MIGRATION_LOG_LEVEL
+  
+  # General Parameters
+  max_num_sstables_per_subset: 250                        # MIGRATION_MAX_NUM_SSTABLES_PER_SUBSET
+  subset_calculation_label: "mytieredcalc"                # MIGRATION_SUBSET_CALCULATION_LABEL
+  
+  # Small Tier Parameters
   small_tier_max_sstable_size_gb: 10                      # MIGRATION_SMALL_TIER_MAX_SSTABLE_SIZE_GB
   small_tier_thread_subset_max_size_floor_gb: 2           # MIGRATION_SMALL_TIER_THREAD_SUBSET_MAX_SIZE_FLOOR_GB
   small_tier_worker_num_threads: 4                        # MIGRATION_SMALL_TIER_WORKER_NUM_THREADS
-  subset_calculation_label: "mytieredcalc"                # MIGRATION_SUBSET_CALCULATION_LABEL
-  subset_calculation_strategy: "tiered"                   # MIGRATION_SUBSET_CALCULATION_STRATEGY
-  max_num_sstables_per_subset: 250
+  
+  # Medium Tier Parameters
+  medium_tier_max_sstable_size_gb: 50                     # MIGRATION_MEDIUM_TIER_MAX_SSTABLE_SIZE_GB
+  medium_tier_worker_num_threads: 6                       # MIGRATION_MEDIUM_TIER_WORKER_NUM_THREADS
+  
+  # Optimization
+  optimize_packing_medium_subsets: false                  # MIGRATION_OPTIMIZE_PACKING_MEDIUM_SUBSETS
 
 # Go command configuration
 go_command:
@@ -176,22 +194,21 @@ s3:
 
 # Simulation configuration (maps to run_multi_tier_simulation.py CLI options)
 simulation:
-  # Worker tier configuration
-  worker_config:
-    small_threads: 6                    # --small-threads
-    medium_threads: 4                   # --medium-threads
-    large_threads: 1                    # --large-threads
-    small_max_workers: 4                # --small-max-workers
-    medium_max_workers: 6               # --medium-max-workers
-    large_max_workers: 10               # --large-max-workers
-  
   # Analysis options
   analysis:
-    straggler_threshold: 20.0           # --straggler-threshold (percentage)
-    summary_only: false                 # --summary-only flag
-    no_stragglers: false                # --no-stragglers flag
+    # Execution Configuration
     execution_mode: "concurrent"        # --execution-mode: concurrent, sequential, or round_robin
     max_concurrent_workers: 20          # --max-concurrent-workers (required for round_robin mode)
+    
+    # Worker Allocation
+    small_max_workers: 4                # --small-max-workers (required for non-round_robin modes)
+    medium_max_workers: 6               # --medium-max-workers (required for non-round_robin modes)
+    large_max_workers: 10               # --large-max-workers (required for non-round_robin modes)
+    
+    # Analysis Features
+    enable_straggler_detection: true    # Enable straggler detection analysis
+    straggler_threshold: 20.0           # --straggler-threshold (percentage)
+    summary_only: false                 # --summary-only flag
   
   # Output configuration
   output:
@@ -207,15 +224,17 @@ simulation:
 ### Configuration Sections
 
 #### Migration Section
-Controls environment variables passed to the Go program. The script automatically adds the `MIGRATION_` prefix to most variables (except `cloud_provider` → `CLOUD_PROVIDER`).
+Controls environment variables passed to the Go program. The script automatically adds the `MIGRATION_` prefix to most variables. Some values are hardcoded for simplicity:
+- `cloud_provider`: Hardcoded to "AWS" (not configurable)
+- `subset_calculation_strategy`: Hardcoded to "tiered" (not configurable)
 
-**Key Variables:**
-- `access_key` / `secret_key`: AWS credentials for S3 access
-- `bucket`: S3 bucket name for downloads
-- `region`: AWS region
-- `log_level`: Logging level for the Go program
-- `*_tier_*`: Worker tier configurations
-- `subset_calculation_*`: Subset calculation parameters
+**Configuration Parameters (in logical order):**
+- **Credentials**: `access_key` / `secret_key` - AWS credentials for S3 access
+- **Basic Settings**: `bucket`, `region`, `log_level` - Core AWS and logging configuration
+- **General Parameters**: `max_num_sstables_per_subset`, `subset_calculation_label` - General migration settings
+- **Small Tier Parameters**: Size limits, threading, and subset configuration for small files
+- **Medium Tier Parameters**: Size limits and threading configuration for medium files
+- **Optimization**: `optimize_packing_medium_subsets` - Performance tuning option
 
 #### Go Command Section
 Configures the execution of the `migration-bucket-accessor` program.
@@ -232,16 +251,24 @@ Controls S3 download behavior.
 #### Simulation Section
 Maps directly to `run_multi_tier_simulation.py` CLI options.
 
-**Worker Configuration:**
-- `*_threads`: Number of threads per worker in each tier
-- `*_max_workers`: Maximum concurrent workers per tier
+**Worker Thread Configuration:**
+Worker thread counts are automatically derived from the migration section:
+- `large_threads`: Always 1 (hardcoded)
+- `medium_threads`: Uses `medium_tier_worker_num_threads` from migration config
+- `small_threads`: Uses `small_tier_worker_num_threads` from migration config
 
-**Analysis Options:**
-- `straggler_threshold`: Percentage threshold for straggler detection
-- `summary_only`: Generate only summary visualizations
-- `no_stragglers`: Skip straggler analysis
-- `execution_mode`: Worker scheduling mode - `concurrent` (all tiers parallel), `sequential` (LARGE→MEDIUM→SMALL), or `round_robin` (global limit with round-robin allocation)
-- `max_concurrent_workers`: Total worker limit across all tiers (required for round_robin mode)
+**Analysis Options (in logical order):**
+- **Execution Configuration**:
+  - `execution_mode`: Worker scheduling mode - `concurrent` (all tiers parallel), `sequential` (LARGE→MEDIUM→SMALL), or `round_robin` (global limit with round-robin allocation)
+  - `max_concurrent_workers`: Total worker limit across all tiers (required for round_robin mode)
+- **Worker Allocation**:
+  - `small_max_workers`: Maximum concurrent workers for small tier (required for non-round_robin modes)
+  - `medium_max_workers`: Maximum concurrent workers for medium tier (required for non-round_robin modes)
+  - `large_max_workers`: Maximum concurrent workers for large tier (required for non-round_robin modes)
+- **Analysis Features**:
+  - `enable_straggler_detection`: Enable straggler detection analysis (true/false)
+  - `straggler_threshold`: Percentage threshold for straggler detection
+  - `summary_only`: Generate only summary visualizations
 
 **Output Options:**
 - `output_name`: Base name for output files (migration ID appended automatically)
@@ -251,25 +278,41 @@ Maps directly to `run_multi_tier_simulation.py` CLI options.
 
 ### Environment Variables
 
-The script sets the following environment variables from the `migration` section:
+The script sets the following environment variables:
 
 ```bash
+# Hardcoded values (not configurable)
 CLOUD_PROVIDER=AWS
+MIGRATION_SUBSET_CALCULATION_STRATEGY=tiered
+
+# From migration config (in logical order)
+# Credentials
 MIGRATION_ACCESS_KEY=YOUR_ACCESS_KEY_HERE
-MIGRATION_BUCKET=alice-sst-sdl-test
-MIGRATION_ID=mig100  # Automatically set to current migration ID
-MIGRATION_LOG_LEVEL=DEBUG
-MIGRATION_MEDIUM_TIER_MAX_SSTABLE_SIZE_GB=50
-MIGRATION_MEDIUM_TIER_WORKER_NUM_THREADS=6
-MIGRATION_OPTIMIZE_PACKING_MEDIUM_SUBSETS=false
-MIGRATION_REGION=eu-west-1
 MIGRATION_SECRET_KEY=YOUR_SECRET_KEY_HERE
+
+# Basic Settings
+MIGRATION_BUCKET=alice-sst-sdl-test
+MIGRATION_REGION=eu-west-1
+MIGRATION_LOG_LEVEL=DEBUG
+
+# General Parameters
+MIGRATION_MAX_NUM_SSTABLES_PER_SUBSET=250
+MIGRATION_SUBSET_CALCULATION_LABEL=mytieredcalc
+
+# Small Tier Parameters
 MIGRATION_SMALL_TIER_MAX_SSTABLE_SIZE_GB=10
 MIGRATION_SMALL_TIER_THREAD_SUBSET_MAX_SIZE_FLOOR_GB=2
 MIGRATION_SMALL_TIER_WORKER_NUM_THREADS=4
-MIGRATION_SUBSET_CALCULATION_LABEL=mytieredcalc
-MIGRATION_SUBSET_CALCULATION_STRATEGY=tiered
-MIGRATION_MAX_NUM_SSTABLES_PER_SUBSET=250
+
+# Medium Tier Parameters
+MIGRATION_MEDIUM_TIER_MAX_SSTABLE_SIZE_GB=50
+MIGRATION_MEDIUM_TIER_WORKER_NUM_THREADS=6
+
+# Optimization
+MIGRATION_OPTIMIZE_PACKING_MEDIUM_SUBSETS=false
+
+# Automatically generated
+MIGRATION_ID=mig100  # Set to current migration ID
 ```
 
 ### Template Variables
@@ -291,10 +334,6 @@ migration:
   log_level: "INFO"
 
 simulation:
-  worker_config:
-    small_threads: 4
-    medium_threads: 6
-    large_threads: 2
   output:
     output_name: "test_run"
 ```
@@ -305,15 +344,15 @@ migration:
   # ... migration settings ...
 
 simulation:
-  worker_config:
-    small_threads: 8
-    medium_threads: 12
-    large_threads: 4
+  analysis:
+    execution_mode: "concurrent"
+    max_concurrent_workers: 25
     small_max_workers: 10
     medium_max_workers: 8
     large_max_workers: 6
-  analysis:
+    enable_straggler_detection: true
     straggler_threshold: 15.0
+    summary_only: false
   output:
     detailed_page_size: 50
 ```
@@ -325,8 +364,13 @@ migration:
 
 simulation:
   analysis:
+    execution_mode: "concurrent"
+    max_concurrent_workers: 20
+    small_max_workers: 4
+    medium_max_workers: 6
+    large_max_workers: 10
+    enable_straggler_detection: false
     summary_only: true
-    no_stragglers: true
   output:
     no_csv: true
     output_name: "quick_analysis"
@@ -340,7 +384,13 @@ migration:
 simulation:
   analysis:
     execution_mode: "sequential"  # Process LARGE→MEDIUM→SMALL sequentially
+    max_concurrent_workers: 20
+    small_max_workers: 4
+    medium_max_workers: 6
+    large_max_workers: 10
+    enable_straggler_detection: true
     straggler_threshold: 25.0
+    summary_only: false
   output:
     output_name: "sequential_analysis"
 ```
@@ -354,7 +404,9 @@ simulation:
   analysis:
     execution_mode: "round_robin"    # Round-robin allocation across tiers
     max_concurrent_workers: 15       # Total workers across all tiers
+    enable_straggler_detection: true
     straggler_threshold: 20.0
+    summary_only: false
   output:
     output_name: "round_robin_analysis"
 ```

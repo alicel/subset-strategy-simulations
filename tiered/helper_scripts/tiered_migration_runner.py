@@ -104,9 +104,14 @@ class MigrationRunner:
         # Get migration configuration
         migration_config = self.config.get('migration', {})
         
+        # Set hardcoded values for cloud provider and subset calculation strategy
+        os.environ['CLOUD_PROVIDER'] = 'AWS'
+        os.environ['MIGRATION_SUBSET_CALCULATION_STRATEGY'] = 'tiered'
+        logger.info("Set CLOUD_PROVIDER=AWS (hardcoded)")
+        logger.info("Set MIGRATION_SUBSET_CALCULATION_STRATEGY=tiered (hardcoded)")
+        
         # Define the mapping from config keys to environment variable names (with MIGRATION_ prefix)
         env_var_mapping = {
-            'cloud_provider': 'CLOUD_PROVIDER',  # This one doesn't get MIGRATION_ prefix
             'access_key': 'MIGRATION_ACCESS_KEY',
             'bucket': 'MIGRATION_BUCKET',
             'log_level': 'MIGRATION_LOG_LEVEL',
@@ -119,7 +124,6 @@ class MigrationRunner:
             'small_tier_thread_subset_max_size_floor_gb': 'MIGRATION_SMALL_TIER_THREAD_SUBSET_MAX_SIZE_FLOOR_GB',
             'small_tier_worker_num_threads': 'MIGRATION_SMALL_TIER_WORKER_NUM_THREADS',
             'subset_calculation_label': 'MIGRATION_SUBSET_CALCULATION_LABEL',
-            'subset_calculation_strategy': 'MIGRATION_SUBSET_CALCULATION_STRATEGY',
             'max_num_sstables_per_subset': 'MIGRATION_MAX_NUM_SSTABLES_PER_SUBSET'
         }
         
@@ -379,20 +383,16 @@ class MigrationRunner:
             input_directory = f"data/downloadedSubsetDefinitions/{migration_id}"
         command = ['python', 'run_multi_tier_simulation.py', input_directory]
         
-        # Worker Configuration
-        worker_config = simulation_config.get('worker_config', {})
-        if 'small_threads' in worker_config:
-            command.extend(['--small-threads', str(worker_config['small_threads'])])
-        if 'medium_threads' in worker_config:
-            command.extend(['--medium-threads', str(worker_config['medium_threads'])])
-        if 'large_threads' in worker_config:
-            command.extend(['--large-threads', str(worker_config['large_threads'])])
-        if 'small_max_workers' in worker_config:
-            command.extend(['--small-max-workers', str(worker_config['small_max_workers'])])
-        if 'medium_max_workers' in worker_config:
-            command.extend(['--medium-max-workers', str(worker_config['medium_max_workers'])])
-        if 'large_max_workers' in worker_config:
-            command.extend(['--large-max-workers', str(worker_config['large_max_workers'])])
+        # Worker Configuration - using values from migration section
+        migration_config = self.config.get('migration', {})
+        # Large threads is always 1
+        command.extend(['--large-threads', '1'])
+        # Medium threads uses medium_tier_worker_num_threads from migration config
+        if 'medium_tier_worker_num_threads' in migration_config:
+            command.extend(['--medium-threads', str(migration_config['medium_tier_worker_num_threads'])])
+        # Small threads uses small_tier_worker_num_threads from migration config
+        if 'small_tier_worker_num_threads' in migration_config:
+            command.extend(['--small-threads', str(migration_config['small_tier_worker_num_threads'])])
         
         # Analysis Options
         analysis_config = simulation_config.get('analysis', {})
@@ -400,12 +400,29 @@ class MigrationRunner:
             command.extend(['--straggler-threshold', str(analysis_config['straggler_threshold'])])
         if analysis_config.get('summary_only', False):
             command.append('--summary-only')
-        if analysis_config.get('no_stragglers', False):
+        # Handle enable_straggler_detection (inverted logic from old no_stragglers)
+        if not analysis_config.get('enable_straggler_detection', True):
             command.append('--no-stragglers')
         # Execution mode (default to concurrent for backward compatibility)
         execution_mode = analysis_config.get('execution_mode', 'concurrent')
         if execution_mode != 'concurrent':
             command.extend(['--execution-mode', execution_mode])
+        
+        # Max workers configuration - now in analysis section and conditional on execution mode
+        if execution_mode != 'round_robin':
+            # These parameters are required for non-round-robin modes
+            if 'small_max_workers' in analysis_config:
+                command.extend(['--small-max-workers', str(analysis_config['small_max_workers'])])
+            else:
+                logger.warning(f"Non-round-robin execution mode specified but small_max_workers not set for {migration_id}")
+            if 'medium_max_workers' in analysis_config:
+                command.extend(['--medium-max-workers', str(analysis_config['medium_max_workers'])])
+            else:
+                logger.warning(f"Non-round-robin execution mode specified but medium_max_workers not set for {migration_id}")
+            if 'large_max_workers' in analysis_config:
+                command.extend(['--large-max-workers', str(analysis_config['large_max_workers'])])
+            else:
+                logger.warning(f"Non-round-robin execution mode specified but large_max_workers not set for {migration_id}")
         
         # Max concurrent workers for round-robin mode
         if execution_mode == 'round_robin':
@@ -661,18 +678,29 @@ class MigrationRunner:
                 # Simulation Configuration Section
                 f.write("SIMULATION CONFIGURATION\n")
                 f.write("-"*50 + "\n")
-                # Extract simulation config from first migration
+                # Thread configuration is derived from migration config
+                migration_config = execution_data.get("migration_config", {})
+                if migration_config:
+                    f.write(f"large_threads: 1 (hardcoded)\n")
+                    f.write(f"medium_threads: {migration_config.get('medium_tier_worker_num_threads', 'N/A')}\n")
+                    f.write(f"small_threads: {migration_config.get('small_tier_worker_num_threads', 'N/A')}\n")
+                else:
+                    f.write(f"large_threads: 1 (hardcoded)\n")
+                    f.write(f"medium_threads: N/A\n")
+                    f.write(f"small_threads: N/A\n")
+                
+                # Max workers are in analysis section
                 first_migration_data = next(iter(execution_data["migrations"].values()), {})
                 sim_config = first_migration_data.get("simulation_config", {})
                 if sim_config:
-                    f.write(f"small_threads: {sim_config.get('small_threads')}\n")
-                    f.write(f"medium_threads: {sim_config.get('medium_threads')}\n")
-                    f.write(f"large_threads: {sim_config.get('large_threads')}\n")
-                    f.write(f"small_max_workers: {sim_config.get('small_max_workers')}\n")
-                    f.write(f"medium_max_workers: {sim_config.get('medium_max_workers')}\n")
-                    f.write(f"large_max_workers: {sim_config.get('large_max_workers')}\n")
+                    analysis_config = sim_config.get('analysis', {})
+                    f.write(f"small_max_workers: {analysis_config.get('small_max_workers', 'N/A')}\n")
+                    f.write(f"medium_max_workers: {analysis_config.get('medium_max_workers', 'N/A')}\n")
+                    f.write(f"large_max_workers: {analysis_config.get('large_max_workers', 'N/A')}\n")
                 else:
-                    f.write("Simulation configuration not available\n")
+                    f.write(f"small_max_workers: N/A\n")
+                    f.write(f"medium_max_workers: N/A\n")
+                    f.write(f"large_max_workers: N/A\n")
                 f.write("\n")
                 
                 # Per-Migration Analysis
@@ -888,89 +916,82 @@ class MigrationRunner:
 
 def create_sample_config():
     """Create a sample configuration file for reference."""
-    sample_config = {
-        "migration": {
-            "cloud_provider": "AWS",
-            "access_key": "YOUR_ACCESS_KEY_HERE",
-            "bucket": "alice-sst-sdl-test",
-            "log_level": "DEBUG",
-            "medium_tier_max_sstable_size_gb": 50,
-            "medium_tier_worker_num_threads": 6,
-            "optimize_packing_medium_subsets": False,
-            "region": "eu-west-1",
-            "secret_key": "YOUR_SECRET_KEY_HERE",
-            "small_tier_max_sstable_size_gb": 10,
-            "small_tier_thread_subset_max_size_floor_gb": 2,
-            "small_tier_worker_num_threads": 4,
-            "subset_calculation_label": "mytieredcalc",
-            "subset_calculation_strategy": "tiered",
-            "max_num_sstables_per_subset": 250
-        },
-        "go_command": {
-            "executable": "./mba/migration-bucket-accessor",
-            "args": ["calc_subsets"]
-        },
-        "s3": {
-            "path_template": "{migration_id}/metadata/subsets/{subset_calculation_label}/"
-        },
-        "simulation": {
-            "worker_config": {
-                "small_threads": 6,
-                "medium_threads": 4,
-                "large_threads": 1,
-                "small_max_workers": 4,
-                "medium_max_workers": 6,
-                "large_max_workers": 10
-            },
-            "analysis": {
-                "straggler_threshold": 20.0,
-                "summary_only": False,
-                "no_stragglers": False,
-                "execution_mode": "concurrent",
-                "max_concurrent_workers": 20
-            },
-            "output": {
-                "output_name": "tiered_migration_simulation",
-                "output_dir": "tiered_simulation_outputs/{migration_id}",
-                "no_csv": False,
-                "detailed_page_size": 30
-            },
-            "custom_args": []
-        }
-    }
-    
     # Create the config file in the same directory as this script (helper_scripts)
     script_dir = os.path.dirname(os.path.abspath(__file__))
     config_file_path = os.path.join(script_dir, "migration_config_sample.yaml")
     
+    # Write the config file manually to preserve exact ordering
+    config_content = """go_command:
+  args:
+  - calc_subsets
+  executable: ./mba/migration-bucket-accessor
+migration:
+  access_key: YOUR_ACCESS_KEY_HERE
+  secret_key: YOUR_SECRET_KEY_HERE
+  bucket: alice-sst-sdl-test
+  region: eu-west-1
+  log_level: DEBUG
+  max_num_sstables_per_subset: 250
+  subset_calculation_label: mytieredcalc
+  small_tier_max_sstable_size_gb: 10
+  small_tier_thread_subset_max_size_floor_gb: 2
+  small_tier_worker_num_threads: 4
+  medium_tier_max_sstable_size_gb: 50
+  medium_tier_worker_num_threads: 6
+  optimize_packing_medium_subsets: false
+s3:
+  path_template: '{migration_id}/metadata/subsets/{subset_calculation_label}/'
+simulation:
+  analysis:
+    execution_mode: concurrent
+    max_concurrent_workers: 20
+    small_max_workers: 4
+    medium_max_workers: 6
+    large_max_workers: 10
+    enable_straggler_detection: true
+    straggler_threshold: 20.0
+    summary_only: false
+  custom_args: []
+  output:
+    detailed_page_size: 30
+    no_csv: false
+    output_dir: tiered_simulation_outputs/{migration_id}
+    output_name: tiered_migration_simulation
+"""
+    
     with open(config_file_path, "w") as f:
-        yaml.dump(sample_config, f, default_flow_style=False, indent=2)
+        f.write(config_content)
     
     print(f"Sample configuration file created: {config_file_path}")
     print("Please customize it according to your needs.")
     print()
-    print("The following environment variables will be set from the migration config:")
-    print("  CLOUD_PROVIDER")
-    print("  MIGRATION_ACCESS_KEY")
-    print("  MIGRATION_BUCKET")
+    print("The following environment variables will be set:")
+    print("  CLOUD_PROVIDER=AWS (hardcoded)")
+    print("  MIGRATION_SUBSET_CALCULATION_STRATEGY=tiered (hardcoded)")
+    print("  MIGRATION_ACCESS_KEY (from config)")
+    print("  MIGRATION_SECRET_KEY (from config)")
+    print("  MIGRATION_BUCKET (from config)")
+    print("  MIGRATION_REGION (from config)")
+    print("  MIGRATION_LOG_LEVEL (from config)")
+    print("  MIGRATION_MAX_NUM_SSTABLES_PER_SUBSET (from config)")
+    print("  MIGRATION_SUBSET_CALCULATION_LABEL (from config)")
+    print("  MIGRATION_SMALL_TIER_MAX_SSTABLE_SIZE_GB (from config)")
+    print("  MIGRATION_SMALL_TIER_THREAD_SUBSET_MAX_SIZE_FLOOR_GB (from config)")
+    print("  MIGRATION_SMALL_TIER_WORKER_NUM_THREADS (from config)")
+    print("  MIGRATION_MEDIUM_TIER_MAX_SSTABLE_SIZE_GB (from config)")
+    print("  MIGRATION_MEDIUM_TIER_WORKER_NUM_THREADS (from config)")
+    print("  MIGRATION_OPTIMIZE_PACKING_MEDIUM_SUBSETS (from config)")
     print("  MIGRATION_ID (automatically set to current migration ID)")
-    print("  MIGRATION_LOG_LEVEL")
-    print("  MIGRATION_MEDIUM_TIER_MAX_SSTABLE_SIZE_GB")
-    print("  MIGRATION_MEDIUM_TIER_WORKER_NUM_THREADS")
-    print("  MIGRATION_OPTIMIZE_PACKING_MEDIUM_SUBSETS")
-    print("  MIGRATION_REGION")
-    print("  MIGRATION_SECRET_KEY")
-    print("  MIGRATION_SMALL_TIER_MAX_SSTABLE_SIZE_GB")
-    print("  MIGRATION_SMALL_TIER_THREAD_SUBSET_MAX_SIZE_FLOOR_GB")
-    print("  MIGRATION_SMALL_TIER_WORKER_NUM_THREADS")
-    print("  MIGRATION_SUBSET_CALCULATION_LABEL")
-    print("  MIGRATION_SUBSET_CALCULATION_STRATEGY")
-    print("  MIGRATION_MAX_NUM_SSTABLES_PER_SUBSET")
     print()
     print("Simulation options configured:")
-    print("  Worker Configuration: threads per tier, max workers per tier")
+    print("  Worker Configuration: threads per tier (derived from migration config), max workers per tier")
     print("  Analysis Options: straggler threshold, summary mode, straggler analysis, execution mode")
     print("  Output Options: naming, directory structure, CSV export, pagination")
+    print()
+    print("Worker thread configuration:")
+    print("  large_threads: Always 1 (hardcoded)")
+    print("  medium_threads: Uses medium_tier_worker_num_threads from migration config")
+    print("  small_threads: Uses small_tier_worker_num_threads from migration config")
     print()
     print("Execution modes:")
     print("  execution_mode: 'concurrent' (default) - All tiers process concurrently")
