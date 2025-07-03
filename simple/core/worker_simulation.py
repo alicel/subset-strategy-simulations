@@ -10,12 +10,12 @@ class SimulationError(Exception):
 
 @dataclass
 class SimpleConfig:
-    max_workers: int
+    max_concurrent_workers: int
     
     def __post_init__(self):
         """Validate configuration parameters after initialization."""
-        if self.max_workers <= 0:
-            raise ValueError(f"max_workers must be positive, got {self.max_workers}")
+        if self.max_concurrent_workers <= 0:
+            raise ValueError(f"max_concurrent_workers must be positive, got {self.max_concurrent_workers}")
 
 class SimpleWorker:
     """Represents a single worker processing one subset sequentially."""
@@ -92,13 +92,13 @@ class SimpleSimulation:
         self.simulation_completed = False
         
     def can_add_worker(self) -> bool:
-        """Check if we can add another worker without exceeding max_workers limit."""
-        return len(self.active_workers) < self.config.max_workers
+        """Check if we can add another worker without exceeding max_concurrent_workers limit."""
+        return len(self.active_workers) < self.config.max_concurrent_workers
     
     def add_worker(self, file) -> SimpleWorker:
         """Add a new worker to process the given file."""
         if not self.can_add_worker():
-            raise SimulationError(f"Cannot add worker: already at max capacity ({self.config.max_workers})")
+            raise SimulationError(f"Cannot add worker: already at max capacity ({self.config.max_concurrent_workers})")
         
         worker = SimpleWorker(file.subset_id, self.current_time)
         self.active_workers.append(worker)
@@ -137,7 +137,7 @@ class SimpleSimulation:
             print("No files to process")
             return 0.0
         
-        print(f"\nStarting Simple Simulation with max {self.config.max_workers} concurrent workers")
+        print(f"\nStarting Simple Simulation with max {self.config.max_concurrent_workers} concurrent workers")
         print(f"Processing {len(files)} subset files...")
         
         # Sort files by subset_id for deterministic processing order
@@ -196,7 +196,7 @@ class SimpleSimulation:
         print("="*60)
         
         print(f"\nConfiguration:")
-        print(f"Max concurrent workers: {self.config.max_workers}")
+        print(f"Max concurrent workers: {self.config.max_concurrent_workers}")
         print(f"Total simulation time: {self.current_time:.2f} time units")
         print(f"Workers processed: {len(self.completed_workers)}")
         

@@ -26,6 +26,7 @@ class TieredMigrationMetrics:
     total_workers: int
     total_cpus: int  # threads across all workers
     cpu_time: float  # total thread time used
+    total_data_size_gb: float  # total data size processed in GB
     workers_by_tier: Dict[str, int]  # tier -> worker count
     cpus_by_tier: Dict[str, int]  # tier -> total threads
     stragglers_by_tier: Dict[str, int]  # tier -> straggler worker count
@@ -115,6 +116,11 @@ class TieredComparisonResult:
     def cpu_time_diff(self) -> float:
         """Difference in CPU time (exec2 - exec1)."""
         return self.exec2_metrics.cpu_time - self.exec1_metrics.cpu_time
+    
+    @property
+    def data_size_diff(self) -> float:
+        """Difference in data size (exec2 - exec1)."""
+        return self.exec2_metrics.total_data_size_gb - self.exec1_metrics.total_data_size_gb
     
     def get_config_comparison(self, config_keys: List[str]) -> Dict[str, any]:
         """Compare specific configuration parameters between executions."""
@@ -284,6 +290,7 @@ class TieredSimulationDataExtractor:
             
             # Calculate actual CPU time from worker CSV if available
             cpu_time = 0.0
+            total_data_size_gb = 0.0
             if workers_csv and workers_csv.exists():
                 with open(workers_csv, 'r', encoding='utf-8') as f:
                     reader = csv.DictReader(f)
@@ -292,6 +299,10 @@ class TieredSimulationDataExtractor:
                         duration = float(row['Duration'])
                         threads_per_worker = simulation_config.get(f'{tier.lower()}_threads', 1)
                         cpu_time += duration * threads_per_worker
+                        
+                        # Extract data size from CSV
+                        if 'Data_Size_GB' in row:
+                            total_data_size_gb += float(row['Data_Size_GB'])
             else:
                 # Fallback to conservative estimate if CSV not available
                 cpu_time = total_execution_time * total_cpus if total_cpus > 0 else total_execution_time
@@ -310,6 +321,7 @@ class TieredSimulationDataExtractor:
                 total_workers=total_workers,
                 total_cpus=total_cpus,
                 cpu_time=cpu_time,
+                total_data_size_gb=total_data_size_gb,
                 workers_by_tier=workers_by_tier,
                 cpus_by_tier=cpus_by_tier,
                 stragglers_by_tier=stragglers_by_tier,
@@ -365,7 +377,7 @@ class TieredComparisonAnalyzer:
         
         return comparisons, exec1_only_migrations, exec2_only_migrations
     
-    def print_comparison_summary(self, comparisons: List[TieredComparisonResult], exec1_name: str = None, exec2_name: str = None, exec1_only: Set[str] = None, exec2_only: Set[str] = None):
+    def print_comparison_summary(self, comparisons: List[TieredComparisonResult], exec1_name: str = None, exec2_name: str = None, exec1_only: Set[str] = None, exec2_only: Set[str] = None, data_size_threshold: float = None):
         """Print a summary of the comparison results."""
         if not comparisons:
             print("No comparisons to display.")
@@ -383,6 +395,11 @@ class TieredComparisonAnalyzer:
         else:
             print(f"\nCommon Migrations: {len(comparisons)}")
         
+        # Data size threshold information
+        if data_size_threshold is not None:
+            large_migrations = [comp for comp in comparisons if comp.exec1_metrics.total_data_size_gb >= data_size_threshold]
+            print(f"  Large Migrations:  {len(large_migrations)} (>= {data_size_threshold} GB)")
+        
         # Show exclusive migrations if any exist
         if exec1_only or exec2_only:
             print(f"\nExclusive Migrations:")
@@ -395,9 +412,9 @@ class TieredComparisonAnalyzer:
         exec1_short = (exec1_name[:8] + "..") if exec1_name and len(exec1_name) > 10 else (exec1_name or "Exec1")
         exec2_short = (exec2_name[:8] + "..") if exec2_name and len(exec2_name) > 10 else (exec2_name or "Exec2")
         
-        print(f"\n{'Migration':<12} {'Execution Time':<35} {'Workers':<30} {'CPUs':<30} {'CPU Time':<35}")
-        print(f"{'ID':<12} {exec1_short:<10} {exec2_short:<10} {'2/1':<5} {'1/2':<5} {exec1_short:<8} {exec2_short:<8} {'2/1':<5} {'1/2':<5} {exec1_short:<8} {exec2_short:<8} {'2/1':<5} {'1/2':<5} {exec1_short:<10} {exec2_short:<10} {'2/1':<5} {'1/2':<5}")
-        print("-" * 125)
+        print(f"\n{'Migration':<12} {'Data':<8} {'Execution Time':<35} {'Workers':<30} {'CPUs':<30} {'CPU Time':<35}")
+        print(f"{'ID':<12} {'Size':<8} {exec1_short:<10} {exec2_short:<10} {'2/1':<5} {'1/2':<5} {exec1_short:<8} {exec2_short:<8} {'2/1':<5} {'1/2':<5} {exec1_short:<8} {exec2_short:<8} {'2/1':<5} {'1/2':<5} {exec1_short:<10} {exec2_short:<10} {'2/1':<5} {'1/2':<5}")
+        print(f"{'':12} {'(GB)':<8} {'-'*35} {'-'*30} {'-'*30} {'-'*35}")
         
         # Data rows
         for comp in comparisons:
@@ -421,7 +438,10 @@ class TieredComparisonAnalyzer:
             cpu_ratio_21 = f"{comp.cpu_count_ratio:.2f}"
             cpu_ratio_12 = f"{comp.cpu_count_ratio_inverse:.2f}"
             
-            print(f"{comp.migration_id:<12} {exec1_time:<10} {exec2_time:<10} {time_ratio_21:<5} {time_ratio_12:<5} "
+            # Data size (should be same for both executions)
+            data_size_str = f"{exec1.total_data_size_gb:.1f}"
+            
+            print(f"{comp.migration_id:<12} {data_size_str:<8} {exec1_time:<10} {exec2_time:<10} {time_ratio_21:<5} {time_ratio_12:<5} "
                   f"{exec1.total_workers:<8} {exec2.total_workers:<8} {worker_ratio_21:<5} {worker_ratio_12:<5} "
                   f"{exec1.total_cpus:<8} {exec2.total_cpus:<8} {cpu_ratio_21:<5} {cpu_ratio_12:<5} "
                   f"{exec1_cpu_time:<10} {exec2_cpu_time:<10} {cpu_time_ratio_21:<5} {cpu_time_ratio_12:<5}")
@@ -522,7 +542,7 @@ class TieredComparisonAnalyzer:
         else:
             return f"{time_units:.1f}"
     
-    def save_comparison_csv(self, comparisons: List[TieredComparisonResult], output_file: str, exec1_name: str = None, exec2_name: str = None):
+    def save_comparison_csv(self, comparisons: List[TieredComparisonResult], output_file: str, exec1_name: str = None, exec2_name: str = None, data_size_threshold: float = None):
         """Save comparison results to CSV file."""
         with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
             # Write header comments
@@ -530,7 +550,14 @@ class TieredComparisonAnalyzer:
             csvfile.write(f"# Execution 1: {exec1_name or 'Unknown'}\n")
             csvfile.write(f"# Execution 2: {exec2_name or 'Unknown'}\n")
             csvfile.write(f"# Common Migrations: {len(comparisons)}\n")
+            
+            # Data size threshold information
+            if data_size_threshold is not None:
+                large_migrations = [comp for comp in comparisons if comp.exec1_metrics.total_data_size_gb >= data_size_threshold]
+                csvfile.write(f"# Large Migrations: {len(large_migrations)} (>= {data_size_threshold} GB)\n")
+                
             csvfile.write("# Diff columns show Exec2 - Exec1 (positive = Exec2 higher, negative = Exec2 lower)\n")
+            csvfile.write("# Data size is the same for both executions (same data processed)\n")
             csvfile.write("#\n")
             
             # Write configuration comparison
@@ -559,7 +586,7 @@ class TieredComparisonAnalyzer:
             
             # CSV header
             fieldnames = [
-                'Migration_ID',
+                'Migration_ID', 'Data_Size_GB',
                 'Exec1_Execution_Time', 'Exec2_Execution_Time', 'Execution_Time_Diff',
                 'Exec1_Workers', 'Exec2_Workers', 'Worker_Diff',
                 'Exec1_CPUs', 'Exec2_CPUs', 'CPU_Diff',
@@ -572,6 +599,10 @@ class TieredComparisonAnalyzer:
                 'Exec2_Small_CPUs', 'Exec2_Medium_CPUs', 'Exec2_Large_CPUs'
             ]
             
+            # Add Is_Large_Migration column if threshold is specified
+            if data_size_threshold is not None:
+                fieldnames.append('Is_Large_Migration')
+            
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
             
@@ -582,6 +613,7 @@ class TieredComparisonAnalyzer:
                 
                 row = {
                     'Migration_ID': comp.migration_id,
+                    'Data_Size_GB': f"{exec1.total_data_size_gb:.2f}",
                     'Exec1_Execution_Time': f"{exec1.total_execution_time:.2f}",
                     'Exec2_Execution_Time': f"{exec2.total_execution_time:.2f}",
                     'Execution_Time_Diff': f"{comp.execution_time_diff:.2f}",
@@ -613,11 +645,16 @@ class TieredComparisonAnalyzer:
                     'Exec2_Medium_CPUs': exec2.cpus_by_tier.get('MEDIUM', 0),
                     'Exec2_Large_CPUs': exec2.cpus_by_tier.get('LARGE', 0),
                 }
+                
+                # Add large migration flag if threshold is specified
+                if data_size_threshold is not None:
+                    row['Is_Large_Migration'] = 'Yes' if exec1.total_data_size_gb >= data_size_threshold else 'No'
+                
                 writer.writerow(row)
         
         print(f"CSV comparison report saved to: {output_file}")
     
-    def generate_comparison_report(self, comparisons: List[TieredComparisonResult], exec1_name: str = None, exec2_name: str = None, exec1_only: Set[str] = None, exec2_only: Set[str] = None) -> str:
+    def generate_comparison_report(self, comparisons: List[TieredComparisonResult], exec1_name: str = None, exec2_name: str = None, exec1_only: Set[str] = None, exec2_only: Set[str] = None, data_size_threshold: float = None) -> str:
         """Generate a formatted text report of the comparison results."""
         lines = []
         
@@ -637,6 +674,11 @@ class TieredComparisonAnalyzer:
             lines.append(f"  Common Migrations: {len(comparisons)}")
         else:
             lines.append(f"\nCommon Migrations: {len(comparisons)}")
+        
+        # Data size threshold information
+        if data_size_threshold is not None:
+            large_migrations = [comp for comp in comparisons if comp.exec1_metrics.total_data_size_gb >= data_size_threshold]
+            lines.append(f"  Large Migrations:  {len(large_migrations)} (>= {data_size_threshold} GB)")
         
         # Show exclusive migrations if any exist
         if exec1_only or exec2_only:
@@ -683,9 +725,9 @@ class TieredComparisonAnalyzer:
         exec2_short = (exec2_name[:8] + "..") if exec2_name and len(exec2_name) > 10 else (exec2_name or "Exec2")
         
         lines.append("")
-        lines.append(f"{'Migration':<12} {'Execution Time':<30} {'Workers':<25} {'CPUs':<25} {'CPU Time':<30}")
-        lines.append(f"{'ID':<12} {exec1_short:<10} {exec2_short:<10} {'Diff':<8} {exec1_short:<8} {exec2_short:<8} {'Diff':<6} {exec1_short:<8} {exec2_short:<8} {'Diff':<6} {exec1_short:<10} {exec2_short:<10} {'Diff':<8}")
-        lines.append("-" * 115)
+        lines.append(f"{'Migration':<12} {'Data':<8} {'Execution Time':<30} {'Workers':<25} {'CPUs':<25} {'CPU Time':<30}")
+        lines.append(f"{'ID':<12} {'Size':<8} {exec1_short:<10} {exec2_short:<10} {'Diff':<8} {exec1_short:<8} {exec2_short:<8} {'Diff':<6} {exec1_short:<8} {exec2_short:<8} {'Diff':<6} {exec1_short:<10} {exec2_short:<10} {'Diff':<8}")
+        lines.append(f"{'':12} {'(GB)':<8} {'-'*30} {'-'*25} {'-'*25} {'-'*30}")
         
         # Data rows
         for comp in comparisons:
@@ -716,7 +758,10 @@ class TieredComparisonAnalyzer:
             worker_diff = f"{comp.worker_count_diff:+d}"
             cpu_diff = f"{comp.cpu_count_diff:+d}"
             
-            lines.append(f"{comp.migration_id:<12} {exec1_time:<10} {exec2_time:<10} {time_diff:<8} "
+            # Data size (should be same for both executions)
+            data_size_str = f"{exec1.total_data_size_gb:.1f}"
+            
+            lines.append(f"{comp.migration_id:<12} {data_size_str:<8} {exec1_time:<10} {exec2_time:<10} {time_diff:<8} "
                         f"{exec1_workers_text:<8} {exec2_workers_text:<8} {worker_diff:<6} "
                         f"{exec1.total_cpus:<8} {exec2.total_cpus:<8} {cpu_diff:<6} "
                         f"{exec1_cpu_time:<10} {exec2_cpu_time:<10} {cpu_time_diff:<8}")
@@ -769,16 +814,16 @@ class TieredComparisonAnalyzer:
         
         return "\n".join(lines)
     
-    def save_comparison_report(self, comparisons: List[TieredComparisonResult], output_file: str, exec1_name: str = None, exec2_name: str = None, exec1_only: Set[str] = None, exec2_only: Set[str] = None):
-        """Save the tabular comparison report to a text file."""
-        report_text = self.generate_comparison_report(comparisons, exec1_name, exec2_name, exec1_only, exec2_only)
+    def save_comparison_report(self, comparisons: List[TieredComparisonResult], output_file: str, exec1_name: str = None, exec2_name: str = None, exec1_only: Set[str] = None, exec2_only: Set[str] = None, data_size_threshold: float = None):
+        """Save the comparison report to a text file."""
+        report_content = self.generate_comparison_report(comparisons, exec1_name, exec2_name, exec1_only, exec2_only, data_size_threshold)
         
         with open(output_file, 'w', encoding='utf-8') as f:
-            f.write(report_text)
+            f.write(report_content)
         
-        print(f"Tabular comparison report saved to: {output_file}")
+        print(f"Text comparison report saved to: {output_file}")
 
-    def generate_html_report(self, comparisons: List[TieredComparisonResult], exec1_name: str = None, exec2_name: str = None, exec1_only: Set[str] = None, exec2_only: Set[str] = None) -> str:
+    def generate_html_report(self, comparisons: List[TieredComparisonResult], exec1_name: str = None, exec2_name: str = None, exec1_only: Set[str] = None, exec2_only: Set[str] = None, data_size_threshold: float = None) -> str:
         """Generate an HTML comparison report for browser viewing."""
         if not comparisons:
             return "<html><body><h1>No comparisons to display.</h1></body></html>"
@@ -792,6 +837,7 @@ class TieredComparisonAnalyzer:
         total_exec2_cpus = sum(c.exec2_metrics.total_cpus for c in comparisons)
         total_exec1_cpu_time = sum(c.exec1_metrics.cpu_time for c in comparisons)
         total_exec2_cpu_time = sum(c.exec2_metrics.cpu_time for c in comparisons)
+        total_data_size_gb = sum(c.exec1_metrics.total_data_size_gb for c in comparisons)
         
         # Generate timestamp
         from datetime import datetime
@@ -812,6 +858,7 @@ class TieredComparisonAnalyzer:
         .config-same {{ background-color: #e8f5e8 !important; }}
         .config-different {{ background-color: #ffe8e8 !important; }}
         .has-stragglers {{ background-color: #ffcccc !important; }} /* Light red for cells with stragglers */
+        .large-migration {{ background-color: #ffe4b5 !important; border-left: 4px solid #ff8c00 !important; }}
         
         table {{ border-collapse: collapse; width: 100%; margin-bottom: 20px; background-color: white; }}
         th, td {{ border: 1px solid #ddd; padding: 10px; text-align: left; }}
@@ -850,6 +897,12 @@ class TieredComparisonAnalyzer:
             html += f"""
     <p><strong>Common Migrations:</strong> {len(comparisons)}</p>"""
         
+        # Data size threshold information
+        if data_size_threshold is not None:
+            large_migrations = [comp for comp in comparisons if comp.exec1_metrics.total_data_size_gb >= data_size_threshold]
+            html += f"""
+    <p><strong>Large Migrations:</strong> {len(large_migrations)} (>= {data_size_threshold} GB)</p>"""
+        
         if exec1_only or exec2_only:
             html += f"""</div>
 
@@ -874,15 +927,20 @@ class TieredComparisonAnalyzer:
             <p><strong>Difference:</strong> {'+' if (total_exec2_time - total_exec1_time) >= 0 else ''}{self._format_time(total_exec2_time - total_exec1_time) if (total_exec2_time - total_exec1_time) >= 0 else '-' + self._format_time(abs(total_exec2_time - total_exec1_time))} (Exec2 {'slower' if total_exec2_time > total_exec1_time else 'faster' if total_exec2_time < total_exec1_time else 'same'})</p>
         </div>
         <div>
+            <h3>Total Data Size</h3>
+            <p><strong>Both Executions:</strong> {total_data_size_gb:.1f} GB</p>
+            <p><em>Data size is identical for both executions</em></p>
+        </div>
+        <div>
             <h3>Total Workers</h3>
-            <p><strong>Execution 1:</strong> {total_exec1_workers:,}</p>
-            <p><strong>Execution 2:</strong> {total_exec2_workers:,}</p>
+            <p><strong>Execution 1:</strong> {total_exec1_workers}</p>
+            <p><strong>Execution 2:</strong> {total_exec2_workers}</p>
             <p><strong>Difference:</strong> {total_exec2_workers - total_exec1_workers:+,} (Exec2 {'more' if total_exec2_workers > total_exec1_workers else 'fewer' if total_exec2_workers < total_exec1_workers else 'same'})</p>
         </div>
         <div>
             <h3>Total CPUs</h3>
-            <p><strong>Execution 1:</strong> {total_exec1_cpus:,}</p>
-            <p><strong>Execution 2:</strong> {total_exec2_cpus:,}</p>
+            <p><strong>Execution 1:</strong> {total_exec1_cpus}</p>
+            <p><strong>Execution 2:</strong> {total_exec2_cpus}</p>
             <p><strong>Difference:</strong> {total_exec2_cpus - total_exec1_cpus:+,} (Exec2 {'more' if total_exec2_cpus > total_exec1_cpus else 'fewer' if total_exec2_cpus < total_exec1_cpus else 'same'})</p>
         </div>
         <div>
@@ -900,11 +958,21 @@ class TieredComparisonAnalyzer:
 </div>
 
 <div class="migration-details">
-    <h2>Per-Migration Comparison</h2>
+    <h2>Per-Migration Comparison</h2>"""
+        
+        # Add legend for large migrations if threshold is specified
+        if data_size_threshold is not None:
+            html += f"""
+    <p><strong>Legend:</strong> 
+        <span style="background-color: #ffe4b5; padding: 2px 6px; border-radius: 3px; border-left: 4px solid #ff8c00;">Orange highlighting</span> indicates large migrations (>= {data_size_threshold} GB)
+    </p>"""
+        
+        html += """
     <table>
         <thead>
             <tr>
                 <th rowspan="2">Migration ID</th>
+                <th rowspan="2">Data Size (GB)</th>
                 <th colspan="3">Execution Time</th>
                 <th colspan="3">Workers</th>
                 <th colspan="3">CPUs</th>
@@ -960,10 +1028,10 @@ class TieredComparisonAnalyzer:
             exec_time_diff_str = self._format_time(abs(comp.execution_time_diff))
             exec_time_diff_class = "positive-diff" if comp.execution_time_diff > 0 else "negative-diff" if comp.execution_time_diff < 0 else ""
             
-            worker_diff_str = f"{comp.worker_count_diff:+,}" if comp.worker_count_diff != 0 else "0"
+            worker_diff_str = f"{comp.worker_count_diff:+d}"
             worker_diff_class = "positive-diff" if comp.worker_count_diff > 0 else "negative-diff" if comp.worker_count_diff < 0 else ""
             
-            cpu_diff_str = f"{comp.cpu_count_diff:+,}" if comp.cpu_count_diff != 0 else "0"
+            cpu_diff_str = f"{comp.cpu_count_diff:+d}"
             cpu_diff_class = "positive-diff" if comp.cpu_count_diff > 0 else "negative-diff" if comp.cpu_count_diff < 0 else ""
             
             cpu_time_diff_str = self._format_time(abs(comp.cpu_time_diff))
@@ -1023,9 +1091,15 @@ class TieredComparisonAnalyzer:
                 'LARGE', 'exec2'
             )
 
+            # Determine if this is a large migration
+            is_large_migration = data_size_threshold is not None and exec1.total_data_size_gb >= data_size_threshold
+            migration_id_class = "large-migration" if is_large_migration else ""
+            data_size_class = "large-migration" if is_large_migration else ""
+
             html += f"""
             <tr>
-                <td><strong>{comp.migration_id}</strong></td>
+                <td class="{migration_id_class}"><strong>{comp.migration_id}</strong></td>
+                <td class="number {data_size_class}">{exec1.total_data_size_gb:.1f}</td>
                 <td class="number {'best-time' if best_exec_time == 'exec1' else ''}">{exec1_time_str}</td>
                 <td class="number {'best-time' if best_exec_time == 'exec2' else ''}">{exec2_time_str}</td>
                 <td class="number {exec_time_diff_class}">{exec_time_diff_str}</td>
@@ -1151,9 +1225,9 @@ class TieredComparisonAnalyzer:
         
         return html
 
-    def save_html_report(self, comparisons: List[TieredComparisonResult], output_file: str, exec1_name: str = None, exec2_name: str = None, exec1_only: Set[str] = None, exec2_only: Set[str] = None):
+    def save_html_report(self, comparisons: List[TieredComparisonResult], output_file: str, exec1_name: str = None, exec2_name: str = None, exec1_only: Set[str] = None, exec2_only: Set[str] = None, data_size_threshold: float = None):
         """Save the HTML comparison report to a file."""
-        html_content = self.generate_html_report(comparisons, exec1_name, exec2_name, exec1_only, exec2_only)
+        html_content = self.generate_html_report(comparisons, exec1_name, exec2_name, exec1_only, exec2_only, data_size_threshold)
         
         with open(output_file, 'w', encoding='utf-8') as f:
             f.write(html_content)
@@ -1207,6 +1281,9 @@ Examples:
   # Compare and save results to organized output directory (default - saves to comparison/output/tiered/my_analysis/)
   python comparison/tiered_comparison_tool.py --exec1 test_new_5 --exec2 test_new_6 --comparison-exec-name my_tiered_analysis
   
+  # Compare with highlighting for large migrations (>= 5.0 GB)
+  python comparison/tiered_comparison_tool.py --exec1 test_new_5 --exec2 test_new_6 --comparison-exec-name my_tiered_analysis --data-size-threshold 5.0
+  
   # Compare without saving reports (console output only)
   python comparison/tiered_comparison_tool.py --exec1 test_new_5 --exec2 test_new_6 --comparison-exec-name my_tiered_analysis --omit-reports
   
@@ -1239,6 +1316,10 @@ Examples:
     parser.add_argument('--omit-reports',
                        action='store_true',
                        help='Skip saving organized comparison reports (only show console output)')
+    
+    # Data size highlighting
+    parser.add_argument('--data-size-threshold', type=float,
+                       help='Highlight migrations with data size >= this threshold (in GB). Example: --data-size-threshold 5.0')
     
     args = parser.parse_args()
     
@@ -1297,7 +1378,7 @@ Examples:
             sys.exit(1)
         
         # Print summary to console
-        analyzer.print_comparison_summary(comparisons, exec1_name, exec2_name, exec1_only, exec2_only)
+        analyzer.print_comparison_summary(comparisons, exec1_name, exec2_name, exec1_only, exec2_only, args.data_size_threshold)
         
         # Handle output file generation
         if args.comparison_exec_name and not args.omit_reports:
@@ -1316,9 +1397,9 @@ Examples:
             html_file = f"{output_dir}/tiered_comparison_report_{args.comparison_exec_name}.html"
             
             # Save all report formats
-            analyzer.save_comparison_csv(comparisons, csv_file, exec1_name, exec2_name)
-            analyzer.save_comparison_report(comparisons, txt_file, exec1_name, exec2_name, exec1_only, exec2_only)
-            analyzer.save_html_report(comparisons, html_file, exec1_name, exec2_name, exec1_only, exec2_only)
+            analyzer.save_comparison_csv(comparisons, csv_file, exec1_name, exec2_name, args.data_size_threshold)
+            analyzer.save_comparison_report(comparisons, txt_file, exec1_name, exec2_name, exec1_only, exec2_only, args.data_size_threshold)
+            analyzer.save_html_report(comparisons, html_file, exec1_name, exec2_name, exec1_only, exec2_only, args.data_size_threshold)
             
             print(f"Tiered comparison analysis saved to: {output_dir}/")
         

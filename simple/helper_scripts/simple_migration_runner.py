@@ -127,7 +127,7 @@ class SimpleMigrationRunner:
             'enable_subset_num_sstable_cap': 'MIGRATION_ENABLE_SUBSET_NUM_SSTABLE_CAP',
             
             # Simple Simulation Specific Parameters
-            'max_workers': 'MIGRATION_MAX_WORKERS',
+            'max_concurrent_workers': 'MIGRATION_MAX_WORKERS',
             'worker_processing_time_unit': 'MIGRATION_WORKER_PROCESSING_TIME_UNIT'
         }
         
@@ -365,8 +365,8 @@ class SimpleMigrationRunner:
         
         # Worker configuration
         worker_config = sim_config.get('worker_config', {})
-        if 'max_workers' in worker_config:
-            command_args.extend(['--max-workers', str(worker_config['max_workers'])])
+        if 'max_concurrent_workers' in worker_config:
+            command_args.extend(['--max-concurrent-workers', str(worker_config['max_concurrent_workers'])])
         
         # Output configuration
         output_config = sim_config.get('output', {})
@@ -672,13 +672,13 @@ migration:
   enable_subset_num_sstable_cap: true
   
   # Simple Simulation Specific Parameters
-  max_workers: 90
+  max_concurrent_workers: 90
   worker_processing_time_unit: 1000
 s3:
   path_template: '{migration_id}/metadata/subsets/{subset_calculation_label}/'
 simulation:
   worker_config:
-    max_workers: 90
+    max_concurrent_workers: 90
   visualization:
     no_plotly: false
     plotly_comprehensive: true
@@ -712,11 +712,11 @@ simulation:
     print("  MIGRATION_ID (automatically set to current migration ID)")
     print()
     print("Simulation options configured:")
-    print("  Worker Configuration: max_workers")
+    print("  Worker Configuration: max_concurrent_workers")
     print("  Visualization Options: plotly generation and comprehensive mode")
     print("  Output Options: naming and directory structure")
     print()
-    print("Simple simulation runs with single-threaded workers up to max_workers concurrency.")
+    print("Simple simulation runs with single-threaded workers up to max_concurrent_workers concurrency.")
 
 def find_config_file(config_path: str = None) -> str:
     """Find the configuration file in the current directory or helper_scripts directory.

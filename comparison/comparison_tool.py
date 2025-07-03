@@ -26,6 +26,7 @@ class MigrationMetrics:
     total_workers: int
     total_cpus: int  # threads across all workers
     cpu_time: float  # total thread time used
+    total_data_size_gb: float  # total data size processed in GB
     workers_by_tier: Dict[str, int]  # tier -> worker count
     cpus_by_tier: Dict[str, int]  # tier -> total threads
     stragglers_by_tier: Dict[str, int]  # tier -> straggler worker count
@@ -124,6 +125,11 @@ class ComparisonResult:
         """Difference in CPU time (tiered - simple)."""
         return self.tiered_metrics.cpu_time - self.simple_metrics.cpu_time
     
+    @property
+    def data_size_diff(self) -> float:
+        """Difference in data size (tiered - simple)."""
+        return self.tiered_metrics.total_data_size_gb - self.simple_metrics.total_data_size_gb
+    
     def get_config_comparison(self, config_keys: List[str]) -> Dict[str, any]:
         """Compare specific configuration parameters between strategies."""
         comparison = {}
@@ -216,6 +222,7 @@ class SimulationDataExtractor:
             # Parse worker CSV for actual execution data
             actual_workers = 0
             total_cpu_time = 0.0
+            total_data_size_gb = 0.0
             
             with open(workers_csv, 'r', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
@@ -224,6 +231,8 @@ class SimulationDataExtractor:
                     # Calculate CPU time as duration × threads (1 thread per worker for simple)
                     duration = float(row['Duration'])
                     total_cpu_time += duration * 1  # 1 thread per worker
+                    # Sum up data size
+                    total_data_size_gb += float(row['Data_Size_GB'])
             
             # Parse summary CSV for total execution time and other metrics
             total_execution_time = 0.0
@@ -242,10 +251,25 @@ class SimulationDataExtractor:
             try:
                 with open(config_file, 'r', encoding='utf-8') as f:
                     content = f.read()
-                    # Extract max_workers from config file
+                    # Extract max_concurrent_workers from config file
                     match = re.search(r'Max concurrent workers:\s*(\d+)', content)
                     if match:
-                        config['simulation']['max_workers'] = int(match.group(1))
+                        config['simulation']['max_concurrent_workers'] = int(match.group(1))
+                    
+                    # Extract worker_processing_time_unit if present
+                    match = re.search(r'Worker processing time unit:\s*(\d+)', content)
+                    if match:
+                        config['simulation']['worker_processing_time_unit'] = int(match.group(1))
+                    
+                    # Extract enable_subset_size_cap
+                    match = re.search(r'Enable subset size cap:\s*(true|false)', content, re.IGNORECASE)
+                    if match:
+                        config['migration']['enable_subset_size_cap'] = match.group(1).lower() == 'true'
+                    
+                    # Extract enable_subset_num_sstable_cap
+                    match = re.search(r'Enable subset num sstable cap:\s*(true|false)', content, re.IGNORECASE)
+                    if match:
+                        config['migration']['enable_subset_num_sstable_cap'] = match.group(1).lower() == 'true'
             except Exception as e:
                 print(f"Warning: Could not extract config from {config_file}: {e}")
             
@@ -256,6 +280,7 @@ class SimulationDataExtractor:
                 total_workers=actual_workers,
                 total_cpus=total_cpus,
                 cpu_time=total_cpu_time,
+                total_data_size_gb=total_data_size_gb,
                 workers_by_tier={},
                 cpus_by_tier={},
                 stragglers_by_tier={},
@@ -366,8 +391,9 @@ class SimulationDataExtractor:
                     cpus_by_tier[tier] = 0
                     stragglers_by_tier[tier] = 0
             
-            # Calculate actual CPU time from worker CSV if available
+            # Calculate actual CPU time and total data size from worker CSV if available
             cpu_time = 0.0
+            total_data_size_gb = 0.0
             if workers_csv and workers_csv.exists():
                 with open(workers_csv, 'r', encoding='utf-8') as f:
                     reader = csv.DictReader(f)
@@ -376,6 +402,8 @@ class SimulationDataExtractor:
                         duration = float(row['Duration'])
                         threads_per_worker = simulation_config.get(f'{tier.lower()}_threads', 1)
                         cpu_time += duration * threads_per_worker
+                        # Sum up data size
+                        total_data_size_gb += float(row['Data_Size_GB'])
             else:
                 # Fallback to conservative estimate if CSV not available
                 cpu_time = total_execution_time * total_cpus if total_cpus > 0 else total_execution_time
@@ -394,6 +422,7 @@ class SimulationDataExtractor:
                 total_workers=total_workers,
                 total_cpus=total_cpus,
                 cpu_time=cpu_time,
+                total_data_size_gb=total_data_size_gb,
                 workers_by_tier=workers_by_tier,
                 cpus_by_tier=cpus_by_tier,
                 stragglers_by_tier=stragglers_by_tier,
@@ -524,6 +553,9 @@ class ComparisonAnalyzer:
         total_simple_cpu_time = sum(c.simple_metrics.cpu_time for c in comparisons)
         total_tiered_cpu_time = sum(c.tiered_metrics.cpu_time for c in comparisons)
         
+        total_simple_data_size = sum(c.simple_metrics.total_data_size_gb for c in comparisons)
+        total_tiered_data_size = sum(c.tiered_metrics.total_data_size_gb for c in comparisons)
+        
         print(f"\nTotal Execution Time:")
         print(f"  Simple:      {self._format_time(total_simple_time)}")
         print(f"  Tiered:      {self._format_time(total_tiered_time)}")
@@ -547,6 +579,15 @@ class ComparisonAnalyzer:
         print(f"  Tiered:      {self._format_time(total_tiered_cpu_time)}")
         print(f"  Tiered/Simple: {total_tiered_cpu_time/total_simple_cpu_time:.2f}")
         print(f"  Simple/Tiered: {total_simple_cpu_time/total_tiered_cpu_time:.2f}")
+        
+        print(f"\nTotal Data Size:")
+        print(f"  Simple:      {total_simple_data_size:.2f} GB")
+        print(f"  Tiered:      {total_tiered_data_size:.2f} GB")
+        print(f"  Difference:  {total_tiered_data_size - total_simple_data_size:+.2f} GB (Tiered - Simple)")
+        if total_simple_data_size > 0:
+            print(f"  Tiered/Simple: {total_tiered_data_size/total_simple_data_size:.2f}")
+        if total_tiered_data_size > 0:
+            print(f"  Simple/Tiered: {total_simple_data_size/total_tiered_data_size:.2f}")
     
     def _format_time(self, time_units: float) -> str:
         """Format time units for display."""
@@ -559,7 +600,7 @@ class ComparisonAnalyzer:
         else:
             return f"{time_units:.1f}"
     
-    def save_comparison_csv(self, comparisons: List[ComparisonResult], output_file: str, simple_exec_name: str = None, tiered_exec_name: str = None):
+    def save_comparison_csv(self, comparisons: List[ComparisonResult], output_file: str, simple_exec_name: str = None, tiered_exec_name: str = None, data_size_threshold: float = None):
         """Save comparison results to CSV file."""
         with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
             # Write header comments
@@ -567,14 +608,37 @@ class ComparisonAnalyzer:
             csvfile.write(f"# Simple Execution: {simple_exec_name or 'Unknown'}\n")
             csvfile.write(f"# Tiered Execution: {tiered_exec_name or 'Unknown'}\n")
             csvfile.write(f"# Common Migrations: {len(comparisons)}\n")
+            csvfile.write("# Data_Size_GB is the same for both strategies (same data being processed)\n")
             csvfile.write("# Diff columns show Tiered - Simple (positive = Tiered higher, negative = Tiered lower)\n")
+            if data_size_threshold is not None:
+                csvfile.write(f"# Large Migration Threshold: {data_size_threshold:.2f} GB\n")
             csvfile.write("#\n")
             
             # Write configuration comparison
             if comparisons:
                 csvfile.write("# CONFIGURATION COMPARISON\n")
-                config_keys = [
-                    'max_workers',  # Simple strategy parameter
+                csvfile.write("# Simple and Tiered strategies use different parameters, so they are listed separately\n")
+                csvfile.write("#\n")
+                csvfile.write("# SIMPLE CONFIGURATION\n")
+                
+                simple_config_keys = [
+                    'max_concurrent_workers',
+                    'worker_processing_time_unit',
+                    'enable_subset_size_cap',
+                    'enable_subset_num_sstable_cap'
+                ]
+                first_comp = comparisons[0]
+                simple_config = first_comp.simple_metrics.config
+                
+                for key in simple_config_keys:
+                    value = first_comp._get_config_value(simple_config, key)
+                    display_value = value if value is not None else 'N/A'
+                    csvfile.write(f"# {key}: {display_value}\n")
+                
+                csvfile.write("#\n")
+                csvfile.write("# TIERED CONFIGURATION\n")
+                
+                tiered_config_keys = [
                     'small_tier_max_sstable_size_gb',
                     'small_tier_thread_subset_max_size_floor_gb', 
                     'small_tier_worker_num_threads',
@@ -584,20 +648,19 @@ class ComparisonAnalyzer:
                     'execution_mode',
                     'max_concurrent_workers'
                 ]
-                first_comp = comparisons[0]
-                config_comparison = first_comp.get_config_comparison(config_keys)
+                tiered_config = first_comp.tiered_metrics.config
                 
-                for key, comparison in config_comparison.items():
-                    simple_value = comparison['simple'] if comparison['simple'] is not None else 'N/A'
-                    tiered_value = comparison['tiered'] if comparison['tiered'] is not None else 'N/A'
-                    status = 'Same' if comparison['same'] else 'Different'
-                    csvfile.write(f"# {key}: {simple_value} vs {tiered_value} ({status})\n")
+                for key in tiered_config_keys:
+                    value = first_comp._get_config_value(tiered_config, key)
+                    display_value = value if value is not None else 'N/A'
+                    csvfile.write(f"# {key}: {display_value}\n")
             
             csvfile.write("\n")
             
             # CSV header
             fieldnames = [
                 'Migration_ID',
+                'Data_Size_GB',
                 'Simple_Execution_Time', 'Tiered_Execution_Time', 'Execution_Time_Diff',
                 'Simple_Workers', 'Tiered_Workers', 'Worker_Diff',
                 'Simple_CPUs', 'Tiered_CPUs', 'CPU_Diff',
@@ -606,6 +669,10 @@ class ComparisonAnalyzer:
                 'Tiered_Small_Stragglers', 'Tiered_Medium_Stragglers', 'Tiered_Large_Stragglers',
                 'Tiered_Small_CPUs', 'Tiered_Medium_CPUs', 'Tiered_Large_CPUs'
             ]
+            
+            # Add large migration indicator column if threshold is specified
+            if data_size_threshold is not None:
+                fieldnames.insert(2, 'Is_Large_Migration')
             
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
@@ -617,6 +684,7 @@ class ComparisonAnalyzer:
                 
                 row = {
                     'Migration_ID': comp.migration_id,
+                    'Data_Size_GB': f"{simple.total_data_size_gb:.2f}",
                     'Simple_Execution_Time': f"{simple.total_execution_time:.2f}",
                     'Tiered_Execution_Time': f"{tiered.total_execution_time:.2f}",
                     'Execution_Time_Diff': f"{comp.execution_time_diff:.2f}",
@@ -639,19 +707,20 @@ class ComparisonAnalyzer:
                     'Tiered_Medium_CPUs': tiered.cpus_by_tier.get('MEDIUM', 0),
                     'Tiered_Large_CPUs': tiered.cpus_by_tier.get('LARGE', 0),
                 }
+                
+                # Add large migration indicator if threshold is specified
+                if data_size_threshold is not None:
+                    row['Is_Large_Migration'] = 'Yes' if simple.total_data_size_gb >= data_size_threshold else 'No'
+                
                 writer.writerow(row)
         
         print(f"CSV comparison report saved to: {output_file}")
     
-    def generate_comparison_report(self, comparisons: List[ComparisonResult], simple_exec_name: str = None, tiered_exec_name: str = None, simple_only: Set[str] = None, tiered_only: Set[str] = None) -> str:
-        """Generate the tabular comparison report as a string."""
-        if not comparisons:
-            return "No comparisons to display."
-        
+    def generate_comparison_report(self, comparisons: List[ComparisonResult], simple_exec_name: str = None, tiered_exec_name: str = None, simple_only: Set[str] = None, tiered_only: Set[str] = None, data_size_threshold: float = None) -> str:
+        """Generate a tabular comparison report for text viewing."""
         lines = []
-        lines.append("="*120)
-        lines.append("SIMPLE vs TIERED SIMULATION COMPARISON SUMMARY")
-        lines.append("="*120)
+        lines.append("Simple vs Tiered Migration Simulation Comparison")
+        lines.append("=" * 60)
         
         if simple_exec_name and tiered_exec_name:
             lines.append("")
@@ -663,14 +732,19 @@ class ComparisonAnalyzer:
             lines.append("")
             lines.append(f"Common Migrations: {len(comparisons)}")
         
+        # Show large migration threshold if specified
+        if data_size_threshold is not None:
+            large_migrations = sum(1 for comp in comparisons if comp.simple_metrics.total_data_size_gb >= data_size_threshold)
+            lines.append(f"  Large Migration Threshold: {data_size_threshold:.2f} GB ({large_migrations} migrations)")
+        
         # Show exclusive migrations if any exist
         if simple_only or tiered_only:
             lines.append("")
             lines.append("Exclusive Migrations:")
             if simple_only:
-                lines.append(f"  Simple Only ({len(simple_only)}): {sorted(simple_only)}")
+                lines.append(f"  Simple Only ({len(simple_only)}): {', '.join(sorted(simple_only))}")
             if tiered_only:
-                lines.append(f"  Tiered Only ({len(tiered_only)}): {sorted(tiered_only)}")
+                lines.append(f"  Tiered Only ({len(tiered_only)}): {', '.join(sorted(tiered_only))}")
         
         # Configuration comparison
         if comparisons:
@@ -678,9 +752,34 @@ class ComparisonAnalyzer:
             lines.append("="*60)
             lines.append("CONFIGURATION COMPARISON")
             lines.append("="*60)
+            lines.append("")
+            lines.append("Simple and Tiered strategies use different parameters, so they are listed separately:")
             
-            config_keys = [
-                'max_workers',  # Simple strategy parameter
+            # Simple Configuration
+            lines.append("")
+            lines.append("SIMPLE CONFIGURATION:")
+            lines.append("-" * 25)
+            
+            simple_config_keys = [
+                'max_concurrent_workers',
+                'worker_processing_time_unit',
+                'enable_subset_size_cap',
+                'enable_subset_num_sstable_cap'
+            ]
+            first_comp = comparisons[0]
+            simple_config = first_comp.simple_metrics.config
+            
+            for key in simple_config_keys:
+                value = first_comp._get_config_value(simple_config, key)
+                display_value = value if value is not None else 'N/A'
+                lines.append(f"  {key:<35}: {display_value}")
+            
+            # Tiered Configuration
+            lines.append("")
+            lines.append("TIERED CONFIGURATION:")
+            lines.append("-" * 25)
+            
+            tiered_config_keys = [
                 'small_tier_max_sstable_size_gb',
                 'small_tier_thread_subset_max_size_floor_gb', 
                 'small_tier_worker_num_threads',
@@ -690,19 +789,12 @@ class ComparisonAnalyzer:
                 'execution_mode',
                 'max_concurrent_workers'
             ]
-            first_comp = comparisons[0]
-            config_comparison = first_comp.get_config_comparison(config_keys)
+            tiered_config = first_comp.tiered_metrics.config
             
-            lines.append("")
-            lines.append(f"{'Parameter':<40} {'Simple':<15} {'Tiered':<15} {'Status':<10}")
-            lines.append("-" * 85)
-            
-            for key, comparison in config_comparison.items():
-                simple_value = comparison['simple'] if comparison['simple'] is not None else 'N/A'
-                tiered_value = comparison['tiered'] if comparison['tiered'] is not None else 'N/A'
-                status = 'Same' if comparison['same'] else 'Different'
-                
-                lines.append(f"{key:<40} {str(simple_value):<15} {str(tiered_value):<15} {status:<10}")
+            for key in tiered_config_keys:
+                value = first_comp._get_config_value(tiered_config, key)
+                display_value = value if value is not None else 'N/A'
+                lines.append(f"  {key:<35}: {display_value}")
         
         # Header
         simple_short = (simple_exec_name[:8] + "..") if simple_exec_name and len(simple_exec_name) > 10 else (simple_exec_name or "Simple")
@@ -792,18 +884,29 @@ class ComparisonAnalyzer:
         cpu_time_diff_str = f"{cpu_time_diff:+.1f}s" if abs(cpu_time_diff) < 60 else f"{cpu_time_diff/60:+.1f}m"
         lines.append(f"  Difference:  {cpu_time_diff_str} (Tiered {'more' if cpu_time_diff > 0 else 'less' if cpu_time_diff < 0 else 'same'})")
         
+        # Add data size information
+        total_simple_data_size = sum(c.simple_metrics.total_data_size_gb for c in comparisons)
+        total_tiered_data_size = sum(c.tiered_metrics.total_data_size_gb for c in comparisons)
+        
+        lines.append("")
+        lines.append("Total Data Size:")
+        lines.append(f"  Simple:      {total_simple_data_size:.2f} GB")
+        lines.append(f"  Tiered:      {total_tiered_data_size:.2f} GB")
+        data_size_diff = total_tiered_data_size - total_simple_data_size
+        lines.append(f"  Difference:  {data_size_diff:+.2f} GB (Tiered {'more' if data_size_diff > 0 else 'less' if data_size_diff < 0 else 'same'})")
+        
         return "\n".join(lines)
     
-    def save_comparison_report(self, comparisons: List[ComparisonResult], output_file: str, simple_exec_name: str = None, tiered_exec_name: str = None, simple_only: Set[str] = None, tiered_only: Set[str] = None):
+    def save_comparison_report(self, comparisons: List[ComparisonResult], output_file: str, simple_exec_name: str = None, tiered_exec_name: str = None, simple_only: Set[str] = None, tiered_only: Set[str] = None, data_size_threshold: float = None):
         """Save the tabular comparison report to a text file."""
-        report_text = self.generate_comparison_report(comparisons, simple_exec_name, tiered_exec_name, simple_only, tiered_only)
+        report_text = self.generate_comparison_report(comparisons, simple_exec_name, tiered_exec_name, simple_only, tiered_only, data_size_threshold)
         
         with open(output_file, 'w', encoding='utf-8') as f:
             f.write(report_text)
         
         print(f"Tabular comparison report saved to: {output_file}")
 
-    def generate_html_report(self, comparisons: List[ComparisonResult], simple_exec_name: str = None, tiered_exec_name: str = None, simple_only: Set[str] = None, tiered_only: Set[str] = None) -> str:
+    def generate_html_report(self, comparisons: List[ComparisonResult], simple_exec_name: str = None, tiered_exec_name: str = None, simple_only: Set[str] = None, tiered_only: Set[str] = None, data_size_threshold: float = None) -> str:
         """Generate an HTML comparison report for browser viewing."""
         if not comparisons:
             return "<html><body><h1>No comparisons to display.</h1></body></html>"
@@ -817,6 +920,8 @@ class ComparisonAnalyzer:
         total_tiered_cpus = sum(c.tiered_metrics.total_cpus for c in comparisons)
         total_simple_cpu_time = sum(c.simple_metrics.cpu_time for c in comparisons)
         total_tiered_cpu_time = sum(c.tiered_metrics.cpu_time for c in comparisons)
+        total_simple_data_size = sum(c.simple_metrics.total_data_size_gb for c in comparisons)
+        total_tiered_data_size = sum(c.tiered_metrics.total_data_size_gb for c in comparisons)
         
         # Generate timestamp
         from datetime import datetime
@@ -837,6 +942,7 @@ class ComparisonAnalyzer:
         .config-same {{ background-color: #e8f5e8 !important; }}
         .config-different {{ background-color: #ffe8e8 !important; }}
         .has-stragglers {{ background-color: #ffcccc !important; }} /* Light red for cells with stragglers */
+        .large-migration {{ background-color: #ffe4b5 !important; border-left: 4px solid #ff8c00; }} /* Light orange with orange border for large migrations */
         
         table {{ border-collapse: collapse; width: 100%; margin-bottom: 20px; background-color: white; }}
         th, td {{ border: 1px solid #ddd; padding: 10px; text-align: left; }}
@@ -874,6 +980,11 @@ class ComparisonAnalyzer:
         else:
             html += f"""
     <p><strong>Common Migrations:</strong> {len(comparisons)}</p>"""
+        
+        if data_size_threshold is not None:
+            large_migrations = sum(1 for comp in comparisons if comp.simple_metrics.total_data_size_gb >= data_size_threshold)
+            html += f"""
+    <p><strong>Large Migration Threshold:</strong> {data_size_threshold:.2f} GB ({large_migrations} migrations)</p>"""
         
         if simple_only or tiered_only:
             html += f"""</div>
@@ -916,6 +1027,12 @@ class ComparisonAnalyzer:
             <p><strong>Tiered:</strong> {self._format_time(total_tiered_cpu_time)}</p>
             <p><strong>Difference:</strong> {'+' if (total_tiered_cpu_time - total_simple_cpu_time) >= 0 else ''}{self._format_time(total_tiered_cpu_time - total_simple_cpu_time) if (total_tiered_cpu_time - total_simple_cpu_time) >= 0 else '-' + self._format_time(abs(total_tiered_cpu_time - total_simple_cpu_time))} (Tiered {'more' if total_tiered_cpu_time > total_simple_cpu_time else 'less' if total_tiered_cpu_time < total_simple_cpu_time else 'same'})</p>
         </div>
+        <div>
+            <h3>Total Data Size</h3>
+            <p><strong>Simple:</strong> {total_simple_data_size:.2f} GB</p>
+            <p><strong>Tiered:</strong> {total_tiered_data_size:.2f} GB</p>
+            <p><strong>Difference:</strong> {total_tiered_data_size - total_simple_data_size:+.2f} GB (Tiered {'more' if total_tiered_data_size > total_simple_data_size else 'less' if total_tiered_data_size < total_simple_data_size else 'same'})</p>
+        </div>
     </div>
 </div>
 
@@ -930,6 +1047,7 @@ class ComparisonAnalyzer:
         <thead>
             <tr>
                 <th rowspan="2">Migration ID</th>
+                <th rowspan="2">Data Size (GB)</th>
                 <th colspan="3">Execution Time</th>
                 <th colspan="3">Workers</th>
                 <th colspan="3">CPUs</th>
@@ -975,10 +1093,10 @@ class ComparisonAnalyzer:
             exec_time_diff_str = self._format_time(abs(comp.execution_time_diff))
             exec_time_diff_class = "positive-diff" if comp.execution_time_diff > 0 else "negative-diff" if comp.execution_time_diff < 0 else ""
             
-            worker_diff_str = f"{comp.worker_count_diff:+,}" if comp.worker_count_diff != 0 else "0"
+            worker_diff_str = f"{comp.worker_count_diff:+d}"
             worker_diff_class = "positive-diff" if comp.worker_count_diff > 0 else "negative-diff" if comp.worker_count_diff < 0 else ""
             
-            cpu_diff_str = f"{comp.cpu_count_diff:+,}" if comp.cpu_count_diff != 0 else "0"
+            cpu_diff_str = f"{comp.cpu_count_diff:+d}"
             cpu_diff_class = "positive-diff" if comp.cpu_count_diff > 0 else "negative-diff" if comp.cpu_count_diff < 0 else ""
             
             cpu_time_diff_str = self._format_time(abs(comp.cpu_time_diff))
@@ -1021,9 +1139,15 @@ class ComparisonAnalyzer:
                 'LARGE'
             )
 
+            # Check if this is a large migration
+            is_large_migration = data_size_threshold is not None and simple.total_data_size_gb >= data_size_threshold
+            migration_id_class = "large-migration" if is_large_migration else ""
+            data_size_class = "large-migration" if is_large_migration else ""
+            
             html += f"""
             <tr>
-                <td><strong>{comp.migration_id}</strong></td>
+                <td class="{migration_id_class}"><strong>{comp.migration_id}</strong></td>
+                <td class="number {data_size_class}">{simple.total_data_size_gb:.2f}</td>
                 <td class="number {'best-time' if best_exec_time == 'simple' else ''}">{simple_time_str}</td>
                 <td class="number {'best-time' if best_exec_time == 'tiered' else ''}">{tiered_time_str}</td>
                 <td class="number {exec_time_diff_class}">{exec_time_diff_str}</td>
@@ -1066,7 +1190,16 @@ class ComparisonAnalyzer:
         <li><span style="background-color: #fff8dc; padding: 2px 6px; border-radius: 3px;">Light yellow</span> indicates negative differences (Tiered < Simple)</li>
         <li><strong>Positive execution time difference:</strong> Tiered took longer</li>
         <li><strong>Negative execution time difference:</strong> Tiered was faster</li>
-    </ul>
+    </ul>"""
+        
+        if data_size_threshold is not None:
+            html += f"""
+    <p><strong>Large Migration Highlighting:</strong></p>
+    <ul>
+        <li><span style="background-color: #ffe4b5; padding: 2px 6px; border-radius: 3px; border-left: 4px solid #ff8c00;">Light orange with orange border</span> indicates migrations with data size ≥ {data_size_threshold:.2f} GB</li>
+    </ul>"""
+
+        html += """
 </div>
 
 </body>
@@ -1079,9 +1212,23 @@ class ComparisonAnalyzer:
         if not comparisons:
             return "<p>No migrations available for configuration comparison.</p>"
         
-        # Configuration keys to compare (relevant for simple vs tiered)
-        config_keys = [
-            'max_workers',  # Simple strategy parameter
+        # Get configuration from first comparison (should be same across all migrations in an execution)
+        first_comp = comparisons[0]
+        simple_config = first_comp.simple_metrics.config
+        tiered_config = first_comp.tiered_metrics.config
+        
+        simple_short = simple_exec_name if simple_exec_name else "Simple"
+        tiered_short = tiered_exec_name if tiered_exec_name else "Tiered"
+        
+        # Define relevant configuration keys for each strategy
+        simple_config_keys = [
+            'max_concurrent_workers',
+            'worker_processing_time_unit',
+            'enable_subset_size_cap',
+            'enable_subset_num_sstable_cap'
+        ]
+        
+        tiered_config_keys = [
             'small_tier_max_sstable_size_gb',
             'small_tier_thread_subset_max_size_floor_gb', 
             'small_tier_worker_num_threads',
@@ -1092,59 +1239,71 @@ class ComparisonAnalyzer:
             'max_concurrent_workers'
         ]
         
-        # Use first comparison to get configuration values (should be same across all migrations in an execution)
-        first_comp = comparisons[0]
-        config_comparison = first_comp.get_config_comparison(config_keys)
-        
-        simple_short = simple_exec_name if simple_exec_name else "Simple"
-        tiered_short = tiered_exec_name if tiered_exec_name else "Tiered"
-        
         html = f"""
-        <table style="width: 100%; max-width: 800px;">
-            <thead>
-                <tr>
-                    <th style="text-align: left; width: 40%;">Configuration Parameter</th>
-                    <th style="text-align: center; width: 25%;">{simple_short}</th>
-                    <th style="text-align: center; width: 25%;">{tiered_short}</th>
-                    <th style="text-align: center; width: 10%;">Status</th>
-                </tr>
-            </thead>
-            <tbody>"""
+        <div style="display: flex; gap: 20px; flex-wrap: wrap;">
+            <!-- Simple Configuration -->
+            <div style="flex: 1; min-width: 300px;">
+                <h4>{simple_short} Configuration</h4>
+                <table style="width: 100%; border-collapse: collapse;">
+                    <thead>
+                        <tr>
+                            <th style="text-align: left; padding: 8px; border: 1px solid #ddd; background-color: #f9f9f9;">Parameter</th>
+                            <th style="text-align: center; padding: 8px; border: 1px solid #ddd; background-color: #f9f9f9;">Value</th>
+                        </tr>
+                    </thead>
+                    <tbody>"""
         
-        for key, comparison in config_comparison.items():
-            simple_value = comparison['simple']
-            tiered_value = comparison['tiered']
-            is_same = comparison['same']
-            
-            # Format None values
-            simple_display = simple_value if simple_value is not None else "N/A"
-            tiered_display = tiered_value if tiered_value is not None else "N/A"
-            
-            status_class = "config-same" if is_same else "config-different"
-            status_text = "✓" if is_same else "✗"
-            status_title = "Same configuration" if is_same else "Different configuration"
-            
+        # Add simple configuration rows
+        for key in simple_config_keys:
+            value = first_comp._get_config_value(simple_config, key)
+            display_value = value if value is not None else "N/A"
             html += f"""
-                <tr class="{status_class}">
-                    <td><strong>{key}</strong></td>
-                    <td style="text-align: center;">{simple_display}</td>
-                    <td style="text-align: center;">{tiered_display}</td>
-                    <td style="text-align: center;" title="{status_title}">{status_text}</td>
-                </tr>"""
+                        <tr>
+                            <td style="padding: 8px; border: 1px solid #ddd;"><strong>{key}</strong></td>
+                            <td style="text-align: center; padding: 8px; border: 1px solid #ddd;">{display_value}</td>
+                        </tr>"""
         
         html += """
-            </tbody>
-        </table>
-        <p><strong>Legend:</strong> 
-            <span style="background-color: #e8f5e8; padding: 2px 6px; border-radius: 3px;">Green</span> = Same configuration, 
-            <span style="background-color: #ffe8e8; padding: 2px 6px; border-radius: 3px;">Light red</span> = Different configuration
-        </p>"""
+                    </tbody>
+                </table>
+            </div>
+            
+            <!-- Tiered Configuration -->
+            <div style="flex: 1; min-width: 300px;">"""
+        
+        html += f"""
+                <h4>{tiered_short} Configuration</h4>
+                <table style="width: 100%; border-collapse: collapse;">
+                    <thead>
+                        <tr>
+                            <th style="text-align: left; padding: 8px; border: 1px solid #ddd; background-color: #f9f9f9;">Parameter</th>
+                            <th style="text-align: center; padding: 8px; border: 1px solid #ddd; background-color: #f9f9f9;">Value</th>
+                        </tr>
+                    </thead>
+                    <tbody>"""
+        
+        # Add tiered configuration rows
+        for key in tiered_config_keys:
+            value = first_comp._get_config_value(tiered_config, key)
+            display_value = value if value is not None else "N/A"
+            html += f"""
+                        <tr>
+                            <td style="padding: 8px; border: 1px solid #ddd;"><strong>{key}</strong></td>
+                            <td style="text-align: center; padding: 8px; border: 1px solid #ddd;">{display_value}</td>
+                        </tr>"""
+        
+        html += """
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <p style="margin-top: 15px;"><strong>Note:</strong> Simple and Tiered strategies use different configuration parameters, so they are displayed separately for easy comparison.</p>"""
         
         return html
 
-    def save_html_report(self, comparisons: List[ComparisonResult], output_file: str, simple_exec_name: str = None, tiered_exec_name: str = None, simple_only: Set[str] = None, tiered_only: Set[str] = None):
+    def save_html_report(self, comparisons: List[ComparisonResult], output_file: str, simple_exec_name: str = None, tiered_exec_name: str = None, simple_only: Set[str] = None, tiered_only: Set[str] = None, data_size_threshold: float = None):
         """Save the HTML comparison report to a file."""
-        html_content = self.generate_html_report(comparisons, simple_exec_name, tiered_exec_name, simple_only, tiered_only)
+        html_content = self.generate_html_report(comparisons, simple_exec_name, tiered_exec_name, simple_only, tiered_only, data_size_threshold)
         
         with open(output_file, 'w', encoding='utf-8') as f:
             f.write(html_content)
@@ -1198,6 +1357,9 @@ Examples:
   # Compare and save results to organized output directory (default - saves to output/simple-tiered/my_analysis/)
   python comparison/comparison_tool.py --simple-execution alice_test_run --tiered-execution test_new_5 --comparison-exec-name my_analysis
   
+  # Compare with highlighting of large migrations (≥ 10 GB)
+  python comparison/comparison_tool.py --simple-execution alice_test_run --tiered-execution test_new_5 --comparison-exec-name my_analysis --data-size-threshold 10.0
+  
   # Compare without saving reports (console output only)
   python comparison/comparison_tool.py --simple-execution alice_test_run --tiered-execution test_new_5 --comparison-exec-name my_analysis --omit-reports
   
@@ -1230,6 +1392,11 @@ Examples:
     parser.add_argument('--omit-reports',
                        action='store_true',
                        help='Skip saving organized comparison reports (only show console output)')
+    
+    # Data size threshold for highlighting large migrations
+    parser.add_argument('--data-size-threshold',
+                       type=float,
+                       help='Highlight migrations with data size >= this threshold (in GB). Example: --data-size-threshold 10.0')
     
     args = parser.parse_args()
     
@@ -1308,9 +1475,9 @@ Examples:
             html_file = f"{output_dir}/comparison_report_{args.comparison_exec_name}.html"
             
             # Save all report formats
-            analyzer.save_comparison_csv(comparisons, csv_file, simple_exec_name, tiered_exec_name)
-            analyzer.save_comparison_report(comparisons, txt_file, simple_exec_name, tiered_exec_name, simple_only, tiered_only)
-            analyzer.save_html_report(comparisons, html_file, simple_exec_name, tiered_exec_name, simple_only, tiered_only)
+            analyzer.save_comparison_csv(comparisons, csv_file, simple_exec_name, tiered_exec_name, args.data_size_threshold)
+            analyzer.save_comparison_report(comparisons, txt_file, simple_exec_name, tiered_exec_name, simple_only, tiered_only, args.data_size_threshold)
+            analyzer.save_html_report(comparisons, html_file, simple_exec_name, tiered_exec_name, simple_only, tiered_only, args.data_size_threshold)
             
             print(f"Simple vs Tiered comparison analysis saved to: {output_dir}/")
         

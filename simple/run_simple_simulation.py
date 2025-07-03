@@ -24,7 +24,32 @@ def save_configuration(args, config, config_file, total_time, num_files):
         # Worker configuration
         f.write("Worker Configuration:\n")
         f.write("-" * 21 + "\n")
-        f.write(f"Max concurrent workers: {config.max_workers}\n\n")
+        f.write(f"Max concurrent workers: {config.max_concurrent_workers}\n")
+        
+        # Check for migration-level configuration from environment variables
+        worker_processing_time_unit = os.environ.get('MIGRATION_WORKER_PROCESSING_TIME_UNIT')
+        if worker_processing_time_unit:
+            f.write(f"Worker processing time unit: {worker_processing_time_unit}\n")
+        
+        f.write("\n")
+        
+        # Migration configuration (if available from environment)
+        migration_config_items = []
+        
+        enable_subset_size_cap = os.environ.get('MIGRATION_ENABLE_SUBSET_SIZE_CAP')
+        if enable_subset_size_cap:
+            migration_config_items.append(f"Enable subset size cap: {enable_subset_size_cap}")
+        
+        enable_subset_num_sstable_cap = os.environ.get('MIGRATION_ENABLE_SUBSET_NUM_SSTABLE_CAP')
+        if enable_subset_num_sstable_cap:
+            migration_config_items.append(f"Enable subset num sstable cap: {enable_subset_num_sstable_cap}")
+        
+        if migration_config_items:
+            f.write("Migration Configuration:\n")
+            f.write("-" * 24 + "\n")
+            for item in migration_config_items:
+                f.write(f"{item}\n")
+            f.write("\n")
         
         # Output configuration
         f.write("Output Configuration:\n")
@@ -43,8 +68,8 @@ def save_configuration(args, config, config_file, total_time, num_files):
         cmd_parts = [f"python run_simple_simulation.py {args.directory}"]
         
         # Add non-default arguments
-        if args.max_workers != 4:
-            cmd_parts.append(f"--max-workers {args.max_workers}")
+        if args.max_concurrent_workers != 4:
+            cmd_parts.append(f"--max-concurrent-workers {args.max_concurrent_workers}")
         if args.output_name != 'simple_simulation_results':
             cmd_parts.append(f"--output-name {args.output_name}")
         if args.output_dir != 'output_files':
@@ -97,7 +122,7 @@ def save_results_to_file(simulation: SimpleSimulation, output_file: str):
         # Configuration section
         f.write("<h2>Configuration</h2>\n")
         f.write('<div class="config">\n')
-        f.write(f"<p><strong>Max concurrent workers:</strong> {simulation.config.max_workers}</p>\n")
+        f.write(f"<p><strong>Max concurrent workers:</strong> {simulation.config.max_concurrent_workers}</p>\n")
         f.write(f"<p><strong>Total simulation time:</strong> {simulation.current_time:.2f} time units</p>\n")
         f.write(f"<p><strong>Workers processed:</strong> {len(simulation.completed_workers)}</p>\n")
         f.write("</div>\n")
@@ -155,7 +180,7 @@ def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Run simple simulation on subset files')
     parser.add_argument('directory', help='Directory containing subset files to process')
-    parser.add_argument('--max-workers', type=int, default=4, 
+    parser.add_argument('--max-concurrent-workers', type=int, default=4, 
                        help='Maximum number of concurrent workers (default: 4)')
     parser.add_argument('--output-name', type=str, default='simple_simulation_results', 
                        help='Base name for output files (default: simple_simulation_results)')
@@ -171,12 +196,12 @@ def main():
     args = parser.parse_args()
     
     # Validate arguments
-    if args.max_workers <= 0:
-        print("Error: max-workers must be positive", file=sys.stderr)
+    if args.max_concurrent_workers <= 0:
+        print("Error: max-concurrent-workers must be positive", file=sys.stderr)
         sys.exit(1)
     
     # Configure the simulation
-    config = SimpleConfig(max_workers=args.max_workers)
+    config = SimpleConfig(max_concurrent_workers=args.max_concurrent_workers)
     
     # Parse input files from directory
     try:
@@ -193,7 +218,7 @@ def main():
     print("\nSimple Simulation Configuration:")
     print("=" * 50)
     print(f"Input directory: {args.directory}")
-    print(f"Max concurrent workers: {config.max_workers}")
+    print(f"Max concurrent workers: {config.max_concurrent_workers}")
     print(f"Files to process: {len(files)}")
     
     # Create and run simulation
