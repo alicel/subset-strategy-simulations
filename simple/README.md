@@ -31,7 +31,7 @@ pip install -r requirements.txt
 
 ```bash
 # Test with help
-python run_simple_simulation.py --help
+python3 run_simple_simulation.py --help
 ```
 
 ## Quick Start
@@ -40,20 +40,20 @@ python run_simple_simulation.py --help
 
 ```bash
 # Generate sample subset files
-python tools/generate_test_files.py --output-dir test_data --num-files 10
+python3 tools/generate_test_files.py --output-dir test_data --num-files 10
 ```
 
 ### Run Basic Simulation
 
 ```bash
 # Run with default settings (4 concurrent workers)
-python run_simple_simulation.py test_data/mig_simple001/
+python3 run_simple_simulation.py test_data/mig_simple001/
 
 # Run with custom worker count
-python run_simple_simulation.py test_data/mig_simple001/ --max-workers 2
+python3 run_simple_simulation.py test_data/mig_simple001/ --max-workers 2
 
 # Generate comprehensive visualizations
-python run_simple_simulation.py test_data/mig_simple001/ --plotly-comprehensive
+python3 run_simple_simulation.py test_data/mig_simple001/ --plotly-comprehensive
 ```
 
 ## Usage
@@ -61,7 +61,7 @@ python run_simple_simulation.py test_data/mig_simple001/ --plotly-comprehensive
 ### Command Line Options
 
 ```bash
-python run_simple_simulation.py <directory> [options]
+python3 run_simple_simulation.py <directory> [options]
 ```
 
 **Required:**
@@ -103,19 +103,19 @@ The simulation generates several output files:
 
 ```bash
 # Basic simulation
-python run_simple_simulation.py /path/to/migration/data
+python3 run_simple_simulation.py /path/to/migration/data
 
 # High concurrency test
-python run_simple_simulation.py /path/to/migration/data --max-workers 8
+python3 run_simple_simulation.py /path/to/migration/data --max-workers 8
 
 # Detailed analysis with visualizations
-python run_simple_simulation.py /path/to/migration/data \
+python3 run_simple_simulation.py /path/to/migration/data \
     --plotly-comprehensive \
     --output-name detailed_analysis \
     --output-dir ./results
 
 # Sequential processing (1 worker)
-python run_simple_simulation.py /path/to/migration/data --max-workers 1
+python3 run_simple_simulation.py /path/to/migration/data --max-workers 1
 ```
 
 ## Dependencies

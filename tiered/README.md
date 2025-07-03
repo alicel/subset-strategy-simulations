@@ -119,18 +119,18 @@ This example defines 7 SSTables with IDs from 1001 to 1007 and their respective 
 ### Basic Usage
 
 ```bash
-python run_multi_tier_simulation.py <directory>
+python3 run_multi_tier_simulation.py <directory>
 ```
 
 **Important Note**: The script must be run from the root directory of the project. If you're using the helper scripts (like `migration_runner.py`), make sure to run them from the project root directory:
 
 ```bash
 # Correct way (from project root):
-python helper_scripts/migration_runner.py --start-id 100 --end-id 102
+python3 helper_scripts/migration_runner.py --start-id 100 --end-id 102
 
 # Incorrect way (from helper_scripts directory):
 cd helper_scripts
-python migration_runner.py --start-id 100 --end-id 102  # This will fail
+python3 migration_runner.py --start-id 100 --end-id 102  # This will fail
 ```
 
 ### Command Line Options
@@ -168,57 +168,57 @@ python migration_runner.py --start-id 100 --end-id 102  # This will fail
 
 **Basic simulation with default settings:**
 ```bash
-python run_multi_tier_simulation.py test_data/
+python3 run_multi_tier_simulation.py test_data/
 ```
 
 **Custom worker configuration:**
 ```bash
-python run_multi_tier_simulation.py test_data/ \
+python3 run_multi_tier_simulation.py test_data/ \
     --small-threads 4 --medium-threads 6 --large-threads 12 \
     --small-max-workers 5 --medium-max-workers 3 --large-max-workers 2
 ```
 
 **Custom output location and naming:**
 ```bash
-python run_multi_tier_simulation.py test_data/ \
+python3 run_multi_tier_simulation.py test_data/ \
     --output-dir ./simulation_outputs \
     --output-name migration_analysis_v2
 ```
 
 **Summary only with custom straggler threshold:**
 ```bash
-python run_multi_tier_simulation.py test_data/ \
+python3 run_multi_tier_simulation.py test_data/ \
     --summary-only --straggler-threshold 15.0
 ```
 
 **Large dataset with custom pagination:**
 ```bash
-python run_multi_tier_simulation.py test_data/ \
+python3 run_multi_tier_simulation.py test_data/ \
     --detailed-page-size 50
 ```
 
 **Disable pagination (single detailed file):**
 ```bash
-python run_multi_tier_simulation.py test_data/ \
+python3 run_multi_tier_simulation.py test_data/ \
     --detailed-page-size 0
 ```
 
 **Sequential execution (LARGE → MEDIUM → SMALL):**
 ```bash
-python run_multi_tier_simulation.py test_data/ \
+python3 run_multi_tier_simulation.py test_data/ \
     --execution-mode sequential
 ```
 
 **Round-robin execution with global worker limit:**
 ```bash
-python run_multi_tier_simulation.py test_data/ \
+python3 run_multi_tier_simulation.py test_data/ \
     --execution-mode round_robin \
     --max-concurrent-workers 10
 ```
 
 **Round-robin with custom configuration:**
 ```bash
-python run_multi_tier_simulation.py test_data/ \
+python3 run_multi_tier_simulation.py test_data/ \
     --execution-mode round_robin \
     --max-concurrent-workers 15 \
     --straggler-threshold 25.0 \

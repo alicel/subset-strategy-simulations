@@ -46,7 +46,7 @@ First, create a sample configuration file (execute from project root):
 
 ```bash
 # From TieredStrategySimulation/ (project root)
-python simple/helper_scripts/simple_migration_runner.py --create-sample-config
+python3 simple/helper_scripts/simple_migration_runner.py --create-sample-config
 ```
 
 This creates `simple_migration_config_sample.yaml` in the `simple/helper_scripts/` directory, which you should customize.
@@ -58,19 +58,22 @@ The configuration file has the following sections:
 #### Migration Section
 ```yaml
 migration:
-  cloud_provider: "AWS"
+  # AWS/S3 Configuration
   access_key: "YOUR_ACCESS_KEY_HERE"
   secret_key: "YOUR_SECRET_KEY_HERE"
   bucket: "your-bucket-name"
   region: "eu-west-1"
   storage_endpoint: "https://s3.eu-west-1.amazonaws.com"
+  
+  # Migration Configuration
   log_level: "DEBUG"
+  max_num_sstables_per_subset: 250
   subset_calculation_label: "generalCalculation"
-  subset_calculation_strategy: "simple"
   enable_subset_size_cap: true
   enable_subset_num_sstable_cap: true
-  max_num_sstables_per_subset: 250
-  max_workers: 4
+  
+  # Simple Simulation Specific Parameters
+  max_workers: 90
   worker_processing_time_unit: 1000
 ```
 
@@ -91,7 +94,7 @@ s3:
 ```yaml
 simulation:
   worker_config:
-    max_workers: 4
+    max_workers: 90
   visualization:
     no_plotly: false
     plotly_comprehensive: true
@@ -110,7 +113,7 @@ The `simple_migration_runner.py` script should be executed from the **project ro
 **Correct execution location:**
 ```bash
 # From TieredStrategySimulation/ (project root)
-python simple/helper_scripts/simple_migration_runner.py --start-id 1 --end-id 5 --execution-name "test_run"
+python3 simple/helper_scripts/simple_migration_runner.py --start-id 1 --end-id 5 --execution-name "test_run"
 ```
 
 **Why from project root?**
@@ -120,7 +123,7 @@ python simple/helper_scripts/simple_migration_runner.py --start-id 1 --end-id 5 
 
 ### Configuration File Location
 
-The script will look for `simple_migration_config.yaml` in this order:
+The script will look for `simple_migration_runner_config.yaml` in this order:
 1. Current working directory (project root when executed correctly)
 2. `simple/helper_scripts/` directory
 3. Custom path specified with `--config-path`
@@ -129,26 +132,26 @@ You can specify a custom configuration file using the `--config-path` option:
 
 ```bash
 # Use a specific config file
-python simple/helper_scripts/simple_migration_runner.py --config-path "/path/to/my_config.yaml" --start-id 1 --end-id 5 --execution-name "test"
+python3 simple/helper_scripts/simple_migration_runner.py --config-path "/path/to/my_config.yaml" --start-id 1 --end-id 5 --execution-name "test"
 
 # Use a config file in a different directory
-python simple/helper_scripts/simple_migration_runner.py --config-path "configs/production_config.yaml" --start-id 10 --end-id 20 --execution-name "prod"
+python3 simple/helper_scripts/simple_migration_runner.py --config-path "configs/production_config.yaml" --start-id 10 --end-id 20 --execution-name "prod"
 
 # Use relative path from project root
-python simple/helper_scripts/simple_migration_runner.py --config-path "simple/helper_scripts/my_custom_config.yaml" --start-id 1 --end-id 3 --execution-name "custom"
+python3 simple/helper_scripts/simple_migration_runner.py --config-path "simple/helper_scripts/my_custom_config.yaml" --start-id 1 --end-id 3 --execution-name "custom"
 ```
 
 **Configuration File Setup:**
-1. Create a sample: `python simple/helper_scripts/simple_migration_runner.py --create-sample-config`
-2. Copy the sample: `cp simple/helper_scripts/simple_migration_config_sample.yaml my_config.yaml`
+1. Create a sample: `python3 simple/helper_scripts/simple_migration_runner.py --create-sample-config`
+2. Copy the sample: `cp simple/helper_scripts/simple_migration_config_sample.yaml simple_migration_runner_config.yaml`
 3. Customize your copy with your specific settings
-4. Use it: `--config-path "my_config.yaml"`
+4. Use it: `--config-path "simple_migration_runner_config.yaml"`
 
 ### Basic Usage
 
 ```bash
 # Execute from project root (TieredStrategySimulation/)
-python simple/helper_scripts/simple_migration_runner.py --start-id 1 --end-id 5 --execution-name "test_run"
+python3 simple/helper_scripts/simple_migration_runner.py --start-id 1 --end-id 5 --execution-name "test_run"
 ```
 
 ### Command Line Options
@@ -158,7 +161,7 @@ python simple/helper_scripts/simple_migration_runner.py --start-id 1 --end-id 5 
 - `--execution-name` (required) - Name for this execution (used in report filenames)
 - `--prefix` - Prefix for migration IDs (default: "mig")
 - `--output-dir` - Output directory for execution reports (default: "exec_output")
-- `--config-path` - Path to configuration file (default: searches for `simple_migration_config.yaml`)
+- `--config-path` - Path to configuration file (default: searches for `simple_migration_runner_config.yaml`)
 - `--bucket` - S3 bucket name (overrides config)
 - `--create-sample-config` - Create a sample configuration file
 
@@ -167,19 +170,19 @@ python simple/helper_scripts/simple_migration_runner.py --start-id 1 --end-id 5 
 #### Process migrations mig001 through mig003:
 ```bash
 # From TieredStrategySimulation/ (project root)
-python simple/helper_scripts/simple_migration_runner.py --start-id 1 --end-id 3 --execution-name "initial_test"
+python3 simple/helper_scripts/simple_migration_runner.py --start-id 1 --end-id 3 --execution-name "initial_test"
 ```
 
 #### Use custom config file:
 ```bash
 # From TieredStrategySimulation/ (project root)
-python simple/helper_scripts/simple_migration_runner.py --start-id 10 --end-id 15 --execution-name "prod_run" --config-path "/path/to/my_config.yaml"
+python3 simple/helper_scripts/simple_migration_runner.py --start-id 10 --end-id 15 --execution-name "prod_run" --config-path "/path/to/my_config.yaml"
 ```
 
 #### Override bucket name:
 ```bash
 # From TieredStrategySimulation/ (project root)
-python simple/helper_scripts/simple_migration_runner.py --start-id 1 --end-id 2 --execution-name "custom_bucket" --bucket "my-custom-bucket"
+python3 simple/helper_scripts/simple_migration_runner.py --start-id 1 --end-id 2 --execution-name "custom_bucket" --bucket "my-custom-bucket"
 ```
 
 ## Output
@@ -203,21 +206,26 @@ The script generates several outputs:
 
 The script sets these environment variables for the Go command:
 
-- `CLOUD_PROVIDER`
+**Hardcoded Values:**
+- `CLOUD_PROVIDER=AWS` (hardcoded)
+- `MIGRATION_SUBSET_CALCULATION_STRATEGY=general` (hardcoded)
+
+**From Configuration File:**
 - `MIGRATION_ACCESS_KEY`
 - `MIGRATION_SECRET_KEY`
 - `MIGRATION_BUCKET`
 - `MIGRATION_REGION`
 - `MIGRATION_STORAGE_ENDPOINT`
 - `MIGRATION_LOG_LEVEL`
+- `MIGRATION_MAX_NUM_SSTABLES_PER_SUBSET`
 - `MIGRATION_SUBSET_CALCULATION_LABEL`
-- `MIGRATION_SUBSET_CALCULATION_STRATEGY`
 - `MIGRATION_ENABLE_SUBSET_SIZE_CAP`
 - `MIGRATION_ENABLE_SUBSET_NUM_SSTABLE_CAP`
-- `MIGRATION_MAX_NUM_SSTABLES_PER_SUBSET`
-- `MIGRATION_ID` (automatically set to current migration ID)
 - `MIGRATION_MAX_WORKERS`
 - `MIGRATION_WORKER_PROCESSING_TIME_UNIT`
+
+**Automatically Set:**
+- `MIGRATION_ID` (automatically set to current migration ID being processed)
 
 ## Differences from Tiered Simulation
 
@@ -237,7 +245,7 @@ Key differences from the tiered migration helper:
 - Check that your profile name matches (default: "astra-conn")
 
 ### Configuration File Not Found
-- Ensure `simple_migration_config.yaml` exists in current directory or helper_scripts directory
+- Ensure `simple_migration_runner_config.yaml` exists in current directory or helper_scripts directory
 - Use `--config-path` to specify explicit path to your custom configuration file
 - Verify the path is correct and the file exists: `ls -la /path/to/your/config.yaml`
 - Check file permissions: the script needs read access to the configuration file
@@ -263,7 +271,7 @@ Key differences from the tiered migration helper:
 
 ### Execution Location Issues
 - **Error: "Go command not found"** - Ensure you're running from project root where `mba/` directory exists
-- **Error: "Configuration file not found"** - Check that `simple_migration_config.yaml` exists in project root or `simple/helper_scripts/`
+- **Error: "Configuration file not found"** - Check that `simple_migration_runner_config.yaml` exists in project root or `simple/helper_scripts/`
 - **Error: "Simple simulation script not found"** - Make sure you're executing from project root, not from subdirectories
 
 ### Simulation Issues

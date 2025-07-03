@@ -61,14 +61,14 @@ The `tiered_migration_runner.py` script automates the process of running the tie
 
 3. **Important**: After customizing the configuration, rename the file to the default name that the script expects:
    ```bash
-   mv migration_config_sample.yaml migration_runner_config.yaml
+   mv migration_config_sample.yaml tiered_migration_runner_config.yaml
    ```
 
 ### Usage
 
 Run the script with:
 ```bash
-python tiered_migration_runner.py
+python3 tiered_migration_runner.py
 ```
 
 The script will:
@@ -156,7 +156,7 @@ python3 tiered_migration_runner.py \
 - `--end-id`: Ending migration ID number (required)
 - `--execution-name`: Name for this execution run - used to structure output directories and files (required)
 - `--prefix`: Migration ID prefix (default: "mig")
-- `--config-path`: Path to configuration file (default: "migration_runner_config.yaml")
+- `--config-path`: Path to configuration file (default: "tiered_migration_runner_config.yaml")
 - `--bucket`: S3 bucket name (overrides config)
 - `--output-dir`: Output directory for execution reports (default: "exec_output")
 - `--create-sample-config`: Create sample configuration file

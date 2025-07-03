@@ -53,13 +53,13 @@ Compare two execution runs using execution names (recommended):
 
 ```bash
 cd comparison
-python comparison_tool.py --simple-execution alice_test_run --tiered-execution test_new_5
+python3 comparison_tool.py --simple-execution alice_test_run --tiered-execution test_new_5
 ```
 
 Short form:
 ```bash
 cd comparison
-python comparison_tool.py -s alice_test_run -t test_new_5
+python3 comparison_tool.py -s alice_test_run -t test_new_5
 ```
 
 ### Save Results to CSV
@@ -70,7 +70,7 @@ Create organized comparison analysis with automatic directory structure:
 
 ```bash
 cd comparison
-python comparison_tool.py -s alice_test_run -t test_new_5 --comparison-exec-name my_analysis --output-csv
+python3 comparison_tool.py -s alice_test_run -t test_new_5 --comparison-exec-name my_analysis --output-csv
 ```
 
 This creates:
@@ -83,7 +83,7 @@ comparison/output/my_analysis/
 Short form:
 ```bash
 cd comparison
-python comparison_tool.py -s alice_test_run -t test_new_5 -c my_analysis --output-csv
+python3 comparison_tool.py -s alice_test_run -t test_new_5 -c my_analysis --output-csv
 ```
 
 **Custom Output Path**:
@@ -91,8 +91,7 @@ python comparison_tool.py -s alice_test_run -t test_new_5 -c my_analysis --outpu
 Export to a specific file location:
 
 ```bash
-cd comparison
-python comparison_tool.py -s alice_test_run -t test_new_5 --output custom_results.csv
+python3 comparison_tool.py -s alice_test_run -t test_new_5 --output custom_results.csv
 ```
 
 ### Full Path Mode (Advanced)
@@ -101,7 +100,7 @@ For custom directory structures (use absolute paths or paths relative to the com
 
 ```bash
 cd comparison
-python comparison_tool.py --simple-path ../simple/output/custom_run --tiered-path ../tiered/output/custom_run
+python3 comparison_tool.py --simple-path ../simple/output/custom_run --tiered-path ../tiered/output/custom_run
 ```
 
 ## Command Line Options
@@ -134,17 +133,17 @@ python comparison_tool.py --simple-path ../simple/output/custom_run --tiered-pat
 
 **Quick console comparison:**
 ```bash
-python comparison_tool.py -s run1 -t run2
+python3 comparison_tool.py -s run1 -t run2
 ```
 
 **Organized analysis with CSV:**
 ```bash
-python comparison_tool.py -s run1 -t run2 -c analysis_name --output-csv
+python3 comparison_tool.py -s run1 -t run2 -c analysis_name --output-csv
 ```
 
 **Custom output location:**
 ```bash
-python comparison_tool.py -s run1 -t run2 -o /path/to/custom.csv
+python3 comparison_tool.py -s alice_test_run -t test_new_5 --output custom_results.csv
 ```
 
 ## Output Format

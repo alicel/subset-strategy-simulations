@@ -21,13 +21,13 @@ The `config_redactor.py` script automatically detects and redacts sensitive info
 
 ```bash
 # Show all available configuration files
-python utils/config_redactor.py --list-configs
+python3 utils/config_redactor.py --list-configs
 
 # Display a specific configuration file
-python utils/config_redactor.py --file simple/helper_scripts/simple_migration_config_sample.yaml
+python3 utils/config_redactor.py --file simple/helper_scripts/simple_migration_config_sample.yaml
 
 # Display in JSON format
-python utils/config_redactor.py --file tiered/helper_scripts/migration_config_sample.yaml --format json
+python3 utils/config_redactor.py --file tiered/helper_scripts/migration_config_sample.yaml --format json
 ```
 
 ### Command Line Options
@@ -44,12 +44,12 @@ python utils/config_redactor.py --file tiered/helper_scripts/migration_config_sa
 
 **List Available Configs:**
 ```bash
-python utils/config_redactor.py --list-configs
+python3 utils/config_redactor.py --list-configs
 ```
 
 **Display Simple Migration Config:**
 ```bash
-python utils/config_redactor.py --file simple/helper_scripts/simple_migration_config_sample.yaml
+python3 utils/config_redactor.py --file simple/helper_scripts/simple_migration_config_sample.yaml
 ```
 
 **JSON Output with Custom Redaction:**
@@ -102,40 +102,39 @@ migration:
 The utility automatically discovers these configuration files:
 
 ### Simple Migration Configs
-- `simple/helper_scripts/simple_migration_config.yaml`
 - `simple/helper_scripts/simple_migration_runner_config.yaml`
 - `simple/helper_scripts/simple_migration_config_sample.yaml`
 
 ### Tiered Migration Configs  
-- `tiered/helper_scripts/migration_runner_config.yaml`
-- `tiered/helper_scripts/migration_config.yaml`
-- `tiered/helper_scripts/migration_config_sample.yaml`
+- `comparison/comparison_config.yaml`
+- `comparison/tiered_comparison_config.yaml`
+- `tiered/helper_scripts/tiered_migration_runner_config.yaml`
 
 ## Demo Use Cases
 
 ### 1. Screen Sharing / Presentations
 ```bash
 # Clean YAML output perfect for screen sharing
-python utils/config_redactor.py --file config.yaml --no-header
+python3 utils/config_redactor.py --file config.yaml --no-header
 ```
 
 ### 2. Documentation Generation
 ```bash
 # Generate redacted examples for documentation
-python utils/config_redactor.py --file config.yaml --no-header > docs/config_example.yaml
+python3 utils/config_redactor.py --file config.yaml --no-header > docs/config_example.yaml
 ```
 
 ### 3. Support/Debugging
 ```bash
 # Share configuration safely when asking for help
-python utils/config_redactor.py --file config.yaml --format json
+python3 utils/config_redactor.py --file config.yaml --format json
 ```
 
 ### 4. Team Demos
 ```bash
 # Show complete configuration structure without exposing secrets
-python utils/config_redactor.py --list-configs
-python utils/config_redactor.py --file tiered/helper_scripts/migration_config_sample.yaml
+python3 utils/config_redactor.py --list-configs
+python3 utils/config_redactor.py --file tiered/helper_scripts/migration_config_sample.yaml
 ```
 
 ## Safety Features

@@ -104,22 +104,29 @@ class SimpleMigrationRunner:
         # Get migration configuration
         migration_config = self.config.get('migration', {})
         
-        # Define the mapping from config keys to environment variable names
-        # Simple simulation has different environment variables than tiered
+        # Set hardcoded values for cloud provider and subset calculation strategy
+        os.environ['CLOUD_PROVIDER'] = 'AWS'
+        os.environ['MIGRATION_SUBSET_CALCULATION_STRATEGY'] = 'simple'
+        logger.info("Set CLOUD_PROVIDER=AWS (hardcoded)")
+        logger.info("Set MIGRATION_SUBSET_CALCULATION_STRATEGY=simple (hardcoded)")
+        
+        # Define the mapping from config keys to environment variable names (with MIGRATION_ prefix)
         env_var_mapping = {
-            'cloud_provider': 'CLOUD_PROVIDER',
+            # AWS/S3 Configuration
             'access_key': 'MIGRATION_ACCESS_KEY',
             'secret_key': 'MIGRATION_SECRET_KEY',
             'bucket': 'MIGRATION_BUCKET',
             'region': 'MIGRATION_REGION',
             'storage_endpoint': 'MIGRATION_STORAGE_ENDPOINT',
+            
+            # Migration Configuration
             'log_level': 'MIGRATION_LOG_LEVEL',
+            'max_num_sstables_per_subset': 'MIGRATION_MAX_NUM_SSTABLES_PER_SUBSET',
             'subset_calculation_label': 'MIGRATION_SUBSET_CALCULATION_LABEL',
-            'subset_calculation_strategy': 'MIGRATION_SUBSET_CALCULATION_STRATEGY',
             'enable_subset_size_cap': 'MIGRATION_ENABLE_SUBSET_SIZE_CAP',
             'enable_subset_num_sstable_cap': 'MIGRATION_ENABLE_SUBSET_NUM_SSTABLE_CAP',
-            'max_num_sstables_per_subset': 'MIGRATION_MAX_NUM_SSTABLES_PER_SUBSET',
-            # Simple simulation specific parameters
+            
+            # Simple Simulation Specific Parameters
             'max_workers': 'MIGRATION_MAX_WORKERS',
             'worker_processing_time_unit': 'MIGRATION_WORKER_PROCESSING_TIME_UNIT'
         }
@@ -199,7 +206,7 @@ class SimpleMigrationRunner:
         if not self.s3_client:
             self.s3_client = boto3.client('s3')
         
-        # S3 path structure for simple simulation
+        # S3 path structure for simple simulation - use configurable path
         s3_config = self.config.get('s3', {})
         migration_config = self.config.get('migration', {})
         subset_calculation_label = migration_config.get('subset_calculation_label', 'generalCalculation')
@@ -269,8 +276,8 @@ class SimpleMigrationRunner:
         """Check if metadata exists in S3 for the given migration ID.
         
         For simple simulation, we need to check for both:
-        1. mig<numericID>/metadata/subsets/calculationMetadata/desc
-        2. mig<numericID>/metadata/GlobalStateSummary
+        1. mig<numericID>/metadata/subsets/calculationMetadata/desc/
+        2. mig<numericID>/metadata/GlobalStateSummary-mig<numericID>
         
         Args:
             migration_id: The migration ID (e.g., 'mig119')
@@ -283,14 +290,22 @@ class SimpleMigrationRunner:
         if not self.s3_client:
             self.s3_client = boto3.client('s3')
         
-        # Check for calculationMetadata/desc files
-        calc_metadata_prefix = f"{migration_id}/metadata/subsets/calculationMetadata/desc"
+        # Debug: Log bucket information
+        logger.info(f"Using S3 bucket: {self.bucket_name}")
         
-        # Check for GlobalStateSummary files
-        global_state_prefix = f"{migration_id}/metadata/GlobalStateSummary"
+        # Check for calculationMetadata/desc files (note the trailing slash)
+        calc_metadata_prefix = f"{migration_id}/metadata/subsets/calculationMetadata/desc/"
+        
+        # Check for GlobalStateSummary files (note the migration ID suffix)
+        global_state_prefix = f"{migration_id}/metadata/GlobalStateSummary-{migration_id}"
+        
+        # Debug: Log the exact prefixes being searched
+        logger.info(f"Searching for calculation metadata with prefix: {calc_metadata_prefix}")
+        logger.info(f"Searching for global state with prefix: {global_state_prefix}")
         
         try:
             # Check for calculationMetadata/desc files
+            logger.info(f"Calling S3 ListObjectsV2 with bucket='{self.bucket_name}', prefix='{calc_metadata_prefix}'")
             calc_response = self.s3_client.list_objects_v2(
                 Bucket=self.bucket_name,
                 Prefix=calc_metadata_prefix,
@@ -306,6 +321,7 @@ class SimpleMigrationRunner:
                 return False
             
             # Check for GlobalStateSummary files
+            logger.info(f"Calling S3 ListObjectsV2 with bucket='{self.bucket_name}', prefix='{global_state_prefix}'")
             global_response = self.s3_client.list_objects_v2(
                 Bucket=self.bucket_name,
                 Prefix=global_state_prefix,
@@ -326,6 +342,11 @@ class SimpleMigrationRunner:
                 
         except Exception as e:
             logger.error(f"Failed to check metadata existence for {migration_id}: {e}")
+            logger.error(f"Exception type: {type(e).__name__}")
+            logger.error(f"Exception details: {str(e)}")
+            # Add AWS-specific error details if available
+            if hasattr(e, 'response'):
+                logger.error(f"AWS Error Response: {e.response}")
             return False
     
     def run_simulation(self, migration_id: str, download_dir: str) -> tuple[bool, dict]:
@@ -626,73 +647,69 @@ class SimpleMigrationRunner:
 
 def create_sample_config():
     """Create a sample configuration file for reference."""
-    sample_config = {
-        "migration": {
-            "cloud_provider": "AWS",
-            "access_key": "YOUR_ACCESS_KEY_HERE",
-            "secret_key": "YOUR_SECRET_KEY_HERE",
-            "bucket": "your-bucket-name",
-            "region": "eu-west-1",
-            "storage_endpoint": "https://s3.eu-west-1.amazonaws.com",
-            "log_level": "DEBUG",
-            "subset_calculation_label": "generalCalculation",
-            "subset_calculation_strategy": "simple",
-            "enable_subset_size_cap": True,
-            "enable_subset_num_sstable_cap": True,
-            "max_num_sstables_per_subset": 250,
-            # Simple simulation specific parameters
-            "max_workers": 4,
-            "worker_processing_time_unit": 1000
-        },
-        "go_command": {
-            "executable": "./mba/migration-bucket-accessor",
-            "args": ["calc_subsets"]
-        },
-        "s3": {
-            "path_template": "{migration_id}/metadata/subsets/{subset_calculation_label}/"
-        },
-        "simulation": {
-            "worker_config": {
-                "max_workers": 4
-            },
-            "visualization": {
-                "no_plotly": False,
-                "plotly_comprehensive": True
-            },
-            "output": {
-                "output_name": "simple_migration_simulation",
-                "output_dir": "output/{execution_name}/{migration_id}/plots"
-            },
-            "custom_args": []
-        }
-    }
-    
     # Create the config file in the same directory as this script (helper_scripts)
     script_dir = os.path.dirname(os.path.abspath(__file__))
     config_file_path = os.path.join(script_dir, "simple_migration_config_sample.yaml")
     
+    # Write the config file manually to preserve exact ordering that matches env var mapping
+    config_content = """go_command:
+  executable: ./mba/migration-bucket-accessor
+  args:
+  - calc_subsets
+migration:
+  # AWS/S3 Configuration
+  access_key: YOUR_ACCESS_KEY_HERE
+  secret_key: YOUR_SECRET_KEY_HERE
+  bucket: your-bucket-name
+  region: eu-west-1
+  storage_endpoint: https://s3.eu-west-1.amazonaws.com
+  
+  # Migration Configuration
+  log_level: DEBUG
+  max_num_sstables_per_subset: 250
+  subset_calculation_label: generalCalculation
+  enable_subset_size_cap: true
+  enable_subset_num_sstable_cap: true
+  
+  # Simple Simulation Specific Parameters
+  max_workers: 90
+  worker_processing_time_unit: 1000
+s3:
+  path_template: '{migration_id}/metadata/subsets/{subset_calculation_label}/'
+simulation:
+  worker_config:
+    max_workers: 90
+  visualization:
+    no_plotly: false
+    plotly_comprehensive: true
+  output:
+    output_name: simple_migration_simulation
+    output_dir: output/{execution_name}/{migration_id}/plots
+  custom_args: []
+"""
+    
     with open(config_file_path, "w") as f:
-        yaml.dump(sample_config, f, default_flow_style=False, indent=2)
+        f.write(config_content)
     
     print(f"Sample configuration file created: {config_file_path}")
     print("Please customize it according to your needs.")
     print()
-    print("The following environment variables will be set from the migration config:")
-    print("  CLOUD_PROVIDER")
-    print("  MIGRATION_ACCESS_KEY")
-    print("  MIGRATION_SECRET_KEY")
-    print("  MIGRATION_BUCKET")
-    print("  MIGRATION_REGION")
-    print("  MIGRATION_STORAGE_ENDPOINT")
-    print("  MIGRATION_LOG_LEVEL")
-    print("  MIGRATION_SUBSET_CALCULATION_LABEL")
-    print("  MIGRATION_SUBSET_CALCULATION_STRATEGY")
-    print("  MIGRATION_ENABLE_SUBSET_SIZE_CAP")
-    print("  MIGRATION_ENABLE_SUBSET_NUM_SSTABLE_CAP")
-    print("  MIGRATION_MAX_NUM_SSTABLES_PER_SUBSET")
+    print("The following environment variables will be set:")
+    print("  CLOUD_PROVIDER=AWS (hardcoded)")
+    print("  MIGRATION_SUBSET_CALCULATION_STRATEGY=simple (hardcoded)")
+    print("  MIGRATION_ACCESS_KEY (from config)")
+    print("  MIGRATION_SECRET_KEY (from config)")
+    print("  MIGRATION_BUCKET (from config)")
+    print("  MIGRATION_REGION (from config)")
+    print("  MIGRATION_STORAGE_ENDPOINT (from config)")
+    print("  MIGRATION_LOG_LEVEL (from config)")
+    print("  MIGRATION_MAX_NUM_SSTABLES_PER_SUBSET (from config)")
+    print("  MIGRATION_SUBSET_CALCULATION_LABEL (from config)")
+    print("  MIGRATION_ENABLE_SUBSET_SIZE_CAP (from config)")
+    print("  MIGRATION_ENABLE_SUBSET_NUM_SSTABLE_CAP (from config)")
+    print("  MIGRATION_MAX_WORKERS (from config)")
+    print("  MIGRATION_WORKER_PROCESSING_TIME_UNIT (from config)")
     print("  MIGRATION_ID (automatically set to current migration ID)")
-    print("  MIGRATION_MAX_WORKERS")
-    print("  MIGRATION_WORKER_PROCESSING_TIME_UNIT")
     print()
     print("Simulation options configured:")
     print("  Worker Configuration: max_workers")
@@ -718,19 +735,19 @@ def find_config_file(config_path: str = None) -> str:
             return config_path
         raise FileNotFoundError(f"Specified configuration file not found: {config_path}")
     
-    # Try to find simple_migration_config.yaml in current directory
+    # Try to find simple_migration_runner_config.yaml in current directory
     current_dir = os.getcwd()
-    config_file = os.path.join(current_dir, 'simple_migration_config.yaml')
+    config_file = os.path.join(current_dir, 'simple_migration_runner_config.yaml')
     if os.path.exists(config_file):
         return config_file
     
-    # Try to find simple_migration_config.yaml in helper_scripts directory
+    # Try to find simple_migration_runner_config.yaml in helper_scripts directory
     helper_scripts_dir = os.path.dirname(os.path.abspath(__file__))
-    config_file = os.path.join(helper_scripts_dir, 'simple_migration_config.yaml')
+    config_file = os.path.join(helper_scripts_dir, 'simple_migration_runner_config.yaml')
     if os.path.exists(config_file):
         return config_file
     
-    raise FileNotFoundError("No configuration file found. Please create simple_migration_config.yaml in the current directory or helper_scripts directory.")
+    raise FileNotFoundError("No configuration file found. Please create simple_migration_runner_config.yaml in the current directory or helper_scripts directory.")
 
 def main():
     parser = argparse.ArgumentParser(description='Run simple migration processing for a range of IDs')
@@ -739,7 +756,7 @@ def main():
     parser.add_argument('--execution-name', type=str, help='Name for this execution (used in report filenames)')
     parser.add_argument('--prefix', type=str, default='mig', help='Prefix for migration IDs (default: mig)')
     parser.add_argument('--output-dir', type=str, default=None, help='Output directory for execution reports (default: simple/output/<execution_name>/exec_reports)')
-    parser.add_argument('--config-path', type=str, help='Path to configuration file (default: simple_migration_config.yaml)')
+    parser.add_argument('--config-path', type=str, help='Path to configuration file (default: simple_migration_runner_config.yaml)')
     parser.add_argument('--bucket', type=str, help='S3 bucket name')
     parser.add_argument('--create-sample-config', action='store_true', help='Create a sample configuration file')
     args = parser.parse_args()

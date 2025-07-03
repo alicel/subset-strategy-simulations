@@ -11,10 +11,10 @@ A utility for safely displaying migration runner configuration files with sensit
 **Quick Start:**
 ```bash
 # List available configuration files
-python utils/config_redactor.py --list-configs
+python3 utils/config_redactor.py --list-configs
 
 # Display a configuration with credentials redacted
-python utils/config_redactor.py --file simple/helper_scripts/simple_migration_config_sample.yaml
+python3 utils/config_redactor.py --file simple/helper_scripts/simple_migration_config_sample.yaml
 ```
 
 **Use Cases:**
@@ -30,8 +30,7 @@ See [`README_config_redactor.md`](README_config_redactor.md) for detailed docume
 All utilities are designed to be run from the project root directory:
 
 ```bash
-# Run from TieredStrategySimulation/ (project root)
-python utils/<utility_name>.py [options]
+python3 utils/<utility_name>.py [options]
 ```
 
 ## Integration

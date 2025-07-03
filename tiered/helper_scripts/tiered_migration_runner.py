@@ -1061,19 +1061,19 @@ def find_config_file(config_path: str = None) -> str:
             return config_path
         raise FileNotFoundError(f"Specified configuration file not found: {config_path}")
     
-    # Try to find migration_runner_config.yaml in current directory
+    # Try to find tiered_migration_runner_config.yaml in current directory
     current_dir = os.getcwd()
-    config_file = os.path.join(current_dir, 'migration_runner_config.yaml')
+    config_file = os.path.join(current_dir, 'tiered_migration_runner_config.yaml')
     if os.path.exists(config_file):
         return config_file
     
-    # Try to find migration_runner_config.yaml in helper_scripts directory
+    # Try to find tiered_migration_runner_config.yaml in helper_scripts directory
     helper_scripts_dir = os.path.dirname(os.path.abspath(__file__))
-    config_file = os.path.join(helper_scripts_dir, 'migration_runner_config.yaml')
+    config_file = os.path.join(helper_scripts_dir, 'tiered_migration_runner_config.yaml')
     if os.path.exists(config_file):
         return config_file
     
-    raise FileNotFoundError("No configuration file found. Please create migration_runner_config.yaml in the current directory or helper_scripts directory.")
+    raise FileNotFoundError("No configuration file found. Please create tiered_migration_runner_config.yaml in the current directory or helper_scripts directory.")
 
 def main():
     parser = argparse.ArgumentParser(description='Run migration processing for a range of IDs')
@@ -1082,7 +1082,7 @@ def main():
     parser.add_argument('--execution-name', type=str, help='Name for this execution (used in report filenames)')
     parser.add_argument('--prefix', type=str, default='mig', help='Prefix for migration IDs (default: mig)')
     parser.add_argument('--output-dir', type=str, default='exec_output', help='Output directory for execution reports (default: exec_output)')
-    parser.add_argument('--config-path', type=str, help='Path to configuration file (default: migration_runner_config.yaml)')
+    parser.add_argument('--config-path', type=str, help='Path to configuration file (default: tiered_migration_runner_config.yaml)')
     parser.add_argument('--bucket', type=str, help='S3 bucket name')
     parser.add_argument('--create-sample-config', action='store_true', help='Create a sample configuration file')
     args = parser.parse_args()
