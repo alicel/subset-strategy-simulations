@@ -226,18 +226,40 @@ class MigrationRunner:
         logger.info(f"Local base directory: {base_download_dir}")
         
         try:
-            # List objects in the S3 path
-            response = self.s3_client.list_objects_v2(
-                Bucket=self.bucket_name,
-                Prefix=s3_path
-            )
+            # List objects in the S3 path (with pagination support)
+            all_objects = []
+            continuation_token = None
             
-            if 'Contents' not in response:
+            while True:
+                # Build the list_objects_v2 request
+                list_kwargs = {
+                    'Bucket': self.bucket_name,
+                    'Prefix': s3_path
+                }
+                if continuation_token:
+                    list_kwargs['ContinuationToken'] = continuation_token
+                
+                response = self.s3_client.list_objects_v2(**list_kwargs)
+                
+                # Add objects from this page to our collection
+                if 'Contents' in response:
+                    all_objects.extend(response['Contents'])
+                
+                # Check if there are more pages
+                if response.get('IsTruncated', False):
+                    continuation_token = response.get('NextContinuationToken')
+                    logger.debug(f"Found {len(response['Contents'])} objects in this page, continuing with next page...")
+                else:
+                    break
+            
+            if not all_objects:
                 logger.warning(f"No objects found in S3 path: s3://{self.bucket_name}/{s3_path}")
                 return None
             
+            logger.info(f"Found {len(all_objects)} objects total in S3 (pagination handled)")
+            
             downloaded_files = []
-            for obj in response['Contents']:
+            for obj in all_objects:
                 s3_key = obj['Key']
                 
                 # Preserve the full S3 path structure starting from migration ID
@@ -381,22 +403,33 @@ class MigrationRunner:
         }
         
         if os.path.exists(migration_exec_results_dir):
-            # Get all files in the migration_exec_results directory
-            all_files = glob.glob(os.path.join(migration_exec_results_dir, "*"))
+            # Get all files and directories in the migration_exec_results directory
+            all_items = glob.glob(os.path.join(migration_exec_results_dir, "*"))
             
-            for file_path in all_files:
-                if os.path.isfile(file_path):
-                    filename = os.path.basename(file_path)
-                    
-                    if filename.endswith('.html'):
+            for item_path in all_items:
+                item_name = os.path.basename(item_path)
+                
+                if os.path.isfile(item_path):
+                    if item_name.endswith('.html'):
                         # Move HTML files to plots directory
-                        dest_path = os.path.join(plots_dir, filename)
-                        shutil.move(file_path, dest_path)
+                        dest_path = os.path.join(plots_dir, item_name)
+                        shutil.move(item_path, dest_path)
                         organized_files['plots'].append(dest_path)
-                        logger.info(f"Moved HTML file: {filename} -> plots/")
+                        logger.info(f"Moved HTML file: {item_name} -> plots/")
                     else:
                         # Non-HTML files stay in migration_exec_results
-                        organized_files['migration_exec_results'].append(file_path)
+                        organized_files['migration_exec_results'].append(item_path)
+                elif os.path.isdir(item_path):
+                    # Check if this is a per-worker directory (contains HTML files)
+                    if 'per_worker' in item_name:
+                        # Move the entire per-worker directory to plots
+                        dest_dir = os.path.join(plots_dir, item_name)
+                        shutil.move(item_path, dest_dir)
+                        organized_files['plots'].append(dest_dir)
+                        logger.info(f"Moved per-worker directory: {item_name} -> plots/")
+                    else:
+                        # Other directories stay in migration_exec_results
+                        organized_files['migration_exec_results'].append(item_path)
         
         return organized_files
 
@@ -657,12 +690,28 @@ class MigrationRunner:
                 # Check if files are in the new organized structure
                 if execution_name and 'organized' in output_files and 'migration_exec_results' in output_files['organized']:
                     # Look in the new organized structure
+                    logger.debug(f"Looking for JSON files in organized structure for {migration_id}")
                     for file_path in output_files['organized']['migration_exec_results']:
+                        logger.debug(f"Checking file: {file_path}")
                         if file_path.endswith('_execution_report.json'):
                             json_files.append(file_path)
                             logger.info(f"Found execution report JSON: {file_path}")
                 else:
                     # Fallback: Check the simulation output directory - look in multiple possible locations
+                    logger.debug(f"Using fallback paths for {migration_id}")
+                    
+                    # Also try looking in the timeline file directory as a fallback
+                    if 'timeline' in output_files:
+                        timeline_dir = os.path.dirname(output_files['timeline'])
+                        logger.debug(f"Checking timeline directory: {timeline_dir}")
+                        if os.path.exists(timeline_dir):
+                            for file in os.listdir(timeline_dir):
+                                if file.endswith('_execution_report.json'):
+                                    json_path = os.path.join(timeline_dir, file)
+                                    json_files.append(json_path)
+                                    logger.info(f"Found execution report JSON in timeline dir: {json_path}")
+                    
+                    # Original fallback paths
                     possible_paths = [
                         f"../data/simulation_outputs/{migration_id}",  # From helper_scripts directory
                         f"data/simulation_outputs/{migration_id}",     # From tiered directory  
@@ -670,6 +719,7 @@ class MigrationRunner:
                     ]
                     
                     for sim_output_dir in possible_paths:
+                        logger.debug(f"Checking fallback path: {sim_output_dir}")
                         if os.path.exists(sim_output_dir):
                             for file in os.listdir(sim_output_dir):
                                 if file.endswith('_execution_report.json'):
@@ -687,11 +737,20 @@ class MigrationRunner:
                     # Use the first JSON file found (should only be one per migration)
                     with open(json_files[0], 'r', encoding='utf-8') as f:
                         migration_data = json.load(f)
+                        logger.info(f"Successfully loaded execution data for {migration_id}")
+                        logger.debug(f"Migration data keys: {list(migration_data.keys())}")
                         execution_data["migrations"][migration_id] = migration_data
                 except Exception as e:
                     logger.warning(f"Failed to read execution report for {migration_id}: {e}")
             else:
                 logger.warning(f"No execution report JSON found for {migration_id}")
+                # Create empty migration data to prevent KeyError later
+                execution_data["migrations"][migration_id] = {
+                    'total_execution_time': 0,
+                    'total_migration_size_bytes': 0,
+                    'total_migration_size_gb': 0,
+                    'by_tier': {}
+                }
         
         return execution_data
     
@@ -756,9 +815,12 @@ class MigrationRunner:
                     migration_data = execution_data["migrations"][migration_id]
                     by_tier = migration_data.get("by_tier", {})
                     total_time = migration_data.get("total_execution_time", 0)
+                    total_size_bytes = migration_data.get("total_migration_size_bytes", 0)
+                    total_size_gb = migration_data.get("total_migration_size_gb", 0)
                     
                     f.write(f"Migration ID: {migration_id}\n")
                     f.write(f"Total Execution Time: {total_time:.2f} time units\n")
+                    f.write(f"Total Migration Size: {total_size_bytes:,} bytes ({total_size_gb:.2f} GB)\n")
                     f.write(f"{'Tier':<8} {'Total':<8} {'Straggler':<12} {'Idle':<8} {'Both':<8}\n")
                     f.write(f"{'':^8} {'Workers':<8} {'Workers':<12} {'Workers':<8} {'S+I':<8}\n")
                     f.write("-"*50 + "\n")
@@ -821,7 +883,8 @@ class MigrationRunner:
                 
                 # Header row
                 writer.writerow([
-                    'Migration_ID', 'Total_Execution_Time', 'Tier', 'Total_Workers', 'Straggler_Workers', 
+                    'Migration_ID', 'Total_Execution_Time', 'Total_Migration_Size_Bytes', 'Total_Migration_Size_GB',
+                    'Tier', 'Total_Workers', 'Straggler_Workers', 
                     'Idle_Workers', 'Both_Straggler_And_Idle', 'Straggler_Percentage', 'Idle_Percentage'
                 ])
                 
@@ -830,6 +893,8 @@ class MigrationRunner:
                     migration_data = execution_data["migrations"][migration_id]
                     by_tier = migration_data.get("by_tier", {})
                     total_time = migration_data.get("total_execution_time", 0)
+                    total_size_bytes = migration_data.get("total_migration_size_bytes", 0)
+                    total_size_gb = migration_data.get("total_migration_size_gb", 0)
                     
                     for tier in ['SMALL', 'MEDIUM', 'LARGE']:
                         if tier in by_tier:
@@ -844,7 +909,8 @@ class MigrationRunner:
                             idle_pct = (idle / total * 100) if total > 0 else 0
                             
                             writer.writerow([
-                                migration_id, f"{total_time:.2f}", tier, total, straggler, idle, both,
+                                migration_id, f"{total_time:.2f}", total_size_bytes, f"{total_size_gb:.2f}",
+                                tier, total, straggler, idle, both,
                                 f"{straggler_pct:.1f}", f"{idle_pct:.1f}"
                             ])
             

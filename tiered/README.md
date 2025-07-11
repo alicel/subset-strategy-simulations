@@ -437,3 +437,62 @@ The CSV outputs are designed for integration with automated analysis pipelines:
 - Consistent column naming across files
 - Boolean flags for easy filtering (e.g., straggler identification)
 - Numeric data types for statistical analysis # tiered-subset-strategy-simulation
+
+## Per-Worker Detailed Visualization (NEW)
+
+For large migrations with many workers and threads, the detailed visualization can become very heavy and slow to load. To address this, we now support **per-worker detailed visualization** that breaks down the analysis into smaller, more manageable files.
+
+### When to Use Per-Worker Mode
+
+The system will automatically detect when to use per-worker mode based on:
+- **More than 5 workers** in the simulation
+- **More than 25 total threads** across all workers
+
+You can also force per-worker mode using the `--detailed-per-worker` flag.
+
+### How It Works
+
+When per-worker mode is enabled:
+
+1. **Global Overview**: A lightweight summary showing all workers with efficiency metrics
+2. **Worker Index**: An organized index page grouping workers by tier
+3. **Individual Worker Pages**: One HTML file per worker showing detailed thread timelines
+
+### File Structure
+
+```
+output/
+├── simulation_results_detailed.html          # Global overview
+└── simulation_results_detailed_per_worker/   # Per-worker details
+    ├── index.html                            # Worker index
+    ├── worker0.html                          # Worker 0 details
+    ├── worker1.html                          # Worker 1 details
+    └── ...
+```
+
+### Benefits
+
+- ✅ **Faster loading**: Each file is much smaller
+- ✅ **Better navigation**: Easy to focus on specific workers
+- ✅ **Scalable**: Works with hundreds of workers
+- ✅ **Preserves detail**: Full thread-level analysis available per worker
+
+### Usage Examples
+
+```bash
+# Auto-detect (recommended)
+python run_multi_tier_simulation.py data/ --output-name large_migration
+
+# Force per-worker mode
+python run_multi_tier_simulation.py data/ --detailed-per-worker
+
+# Force traditional mode (not recommended for large migrations)
+python run_multi_tier_simulation.py data/ --detailed-page-size 30
+```
+
+### Navigation
+
+1. Start with the **global overview** to see overall performance
+2. Click **"Browse All Workers"** to access the worker index
+3. From the index, click any worker to see its detailed thread timeline
+4. Use the **"Back to Global Overview"** link to return to the summary

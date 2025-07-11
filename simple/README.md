@@ -1,6 +1,6 @@
 # Simple Database Migration Simulation
 
-A streamlined discrete event simulation for analyzing single-threaded worker strategies in database migration scenarios. Each worker processes subset files sequentially, with configurable concurrency limits.
+A streamlined discrete event simulation for analyzing database migration strategies with configurable worker concurrency and threading. Each worker processes subset files using configurable thread counts, with all threads consuming items in order from their assigned subset.
 
 ## Installation
 
@@ -46,11 +46,14 @@ python3 tools/generate_test_files.py --output-dir test_data --num-files 10
 ### Run Basic Simulation
 
 ```bash
-# Run with default settings (4 concurrent workers)
+# Run with default settings (90 concurrent workers, 1 thread per worker)
 python3 run_simple_simulation.py test_data/mig_simple001/
 
 # Run with custom worker count
-python3 run_simple_simulation.py test_data/mig_simple001/ --max-workers 2
+python3 run_simple_simulation.py test_data/mig_simple001/ --max-concurrent-workers 2
+
+# Run with multi-threaded workers (3 threads per worker)
+python3 run_simple_simulation.py test_data/mig_simple001/ --threads-per-worker 3
 
 # Generate comprehensive visualizations
 python3 run_simple_simulation.py test_data/mig_simple001/ --plotly-comprehensive
@@ -68,9 +71,11 @@ python3 run_simple_simulation.py <directory> [options]
 - `directory` - Directory containing subset files to process
 
 **Options:**
-- `--max-workers N` - Maximum concurrent workers (default: 4)
+- `--max-concurrent-workers N` - Maximum concurrent workers (default: 90)
+- `--threads-per-worker N` - Number of threads per worker (default: 1)
 - `--output-name NAME` - Base name for output files (default: simple_simulation_results)
 - `--output-dir DIR` - Output directory (default: output_files)
+- `--config-dir DIR` - Directory to store config file (default: same as output-dir)
 - `--no-plotly` - Skip interactive Plotly visualizations  
 - `--plotly-comprehensive` - Generate comprehensive Plotly visualizations
 
@@ -102,11 +107,19 @@ The simulation generates several output files:
 ## Examples
 
 ```bash
-# Basic simulation
+# Basic simulation (default: 90 workers, 1 thread each)
 python3 run_simple_simulation.py /path/to/migration/data
 
-# High concurrency test
-python3 run_simple_simulation.py /path/to/migration/data --max-workers 8
+# Low concurrency test (8 workers, 1 thread each)
+python3 run_simple_simulation.py /path/to/migration/data --max-concurrent-workers 8
+
+# Multi-threaded workers (90 workers, 3 threads each = 270 total threads)
+python3 run_simple_simulation.py /path/to/migration/data --threads-per-worker 3
+
+# Custom parallelism (16 workers, 4 threads each = 64 total threads)
+python3 run_simple_simulation.py /path/to/migration/data \
+    --max-concurrent-workers 16 \
+    --threads-per-worker 4
 
 # Detailed analysis with visualizations
 python3 run_simple_simulation.py /path/to/migration/data \
@@ -114,8 +127,8 @@ python3 run_simple_simulation.py /path/to/migration/data \
     --output-name detailed_analysis \
     --output-dir ./results
 
-# Sequential processing (1 worker)
-python3 run_simple_simulation.py /path/to/migration/data --max-workers 1
+# Sequential processing (1 worker, 1 thread)
+python3 run_simple_simulation.py /path/to/migration/data --max-concurrent-workers 1
 ```
 
 ## Dependencies
@@ -129,8 +142,9 @@ All other dependencies are part of Python's standard library.
 ## Features
 
 - ✅ **Discrete Event Simulation** - Accurate virtual clock advancement
-- ✅ **Sequential Processing** - Single-threaded workers process SSTables in order
-- ✅ **Configurable Concurrency** - Control maximum simultaneous workers
+- ✅ **Multi-threaded Workers** - Configurable threads per worker with ordered processing
+- ✅ **Sequential Processing** - All threads consume items from subset in original order
+- ✅ **Configurable Concurrency** - Control maximum simultaneous workers and threads per worker
 - ✅ **Interactive Visualizations** - Timeline, analysis, and distribution charts
 - ✅ **Comprehensive Reporting** - HTML results with statistics and timelines
 - ✅ **Compatible File Format** - Works with existing subset definition files
@@ -139,9 +153,11 @@ All other dependencies are part of Python's standard library.
 ## Simulation Model
 
 The simple simulation models:
-- **Workers**: Single-threaded processes that handle one subset each
-- **Sequential Processing**: SSTables within a subset are processed in file order
+- **Workers**: Multi-threaded processes that handle one subset each
+- **Threading**: Each worker can have 1 or more threads (configurable)
+- **Sequential Processing**: All threads within a worker consume SSTables from their subset in original order
+- **Load Balancing**: Items are assigned to the earliest available thread within each worker
 - **Concurrency Control**: Maximum number of workers running simultaneously
 - **Event-Driven**: Virtual time advances based on worker completion events
 
-This provides a simplified but accurate model for understanding the impact of worker concurrency on overall migration time. 
+This provides a flexible model for understanding the impact of both worker concurrency and threading on overall migration time. The original single-threaded behavior is preserved when `threads_per_worker=1` (default). 

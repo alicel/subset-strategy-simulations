@@ -48,7 +48,9 @@ def save_configuration(args, config, config_file, total_time, num_files):
         f.write(f"CSV export: {'Disabled' if args.no_csv else 'Enabled'}\n")
         f.write(f"Detailed visualization: {'Disabled' if args.summary_only else 'Enabled'}\n")
         if not args.summary_only:
-            if args.detailed_page_size > 0:
+            if args.detailed_per_worker:
+                f.write(f"Detailed visualization: Per-worker mode (forced)\n")
+            elif args.detailed_page_size > 0:
                 f.write(f"Detailed pagination: {args.detailed_page_size} workers per page\n")
             else:
                 f.write(f"Detailed pagination: Disabled (single file)\n")
@@ -97,6 +99,8 @@ def save_configuration(args, config, config_file, total_time, num_files):
             cmd_parts.append(f"--output-dir {args.output_dir}")
         if args.detailed_page_size != 30:
             cmd_parts.append(f"--detailed-page-size {args.detailed_page_size}")
+        if args.detailed_per_worker:
+            cmd_parts.append("--detailed-per-worker")
         if args.execution_mode != 'concurrent':
             cmd_parts.append(f"--execution-mode {args.execution_mode}")
         if args.execution_mode == 'round_robin' and args.max_concurrent_workers:
@@ -136,6 +140,8 @@ def main():
                        help='Directory to store output files (default: output_files)')
     parser.add_argument('--detailed-page-size', type=int, default=30,
                        help='Maximum number of workers per page in detailed visualization (default: 30, set to 0 to disable pagination)')
+    parser.add_argument('--detailed-per-worker', action='store_true',
+                       help='Generate per-worker detailed visualization files (recommended for large migrations, auto-detected if not specified)')
     parser.add_argument('--execution-mode', choices=['concurrent', 'sequential', 'round_robin'], default='concurrent',
                        help='Worker execution mode: concurrent (all tiers parallel), sequential (LARGE->MEDIUM->SMALL), or round_robin (global limit with round-robin allocation)')
     parser.add_argument('--max-concurrent-workers', type=int, default=None,
@@ -222,19 +228,8 @@ def main():
         show_stragglers=not args.no_stragglers, 
         export_csv=not args.no_csv,
         csv_base=csv_base,
-        detailed_page_size=args.detailed_page_size if args.detailed_page_size > 0 else None
-    )
-
-    # Save configuration to file
-    save_configuration(args, config, config_file, total_time, len(files))
-    
-    simulation.print_results(
-        output_file=output_file,
-        show_details=not args.summary_only, 
-        show_stragglers=not args.no_stragglers, 
-        export_csv=not args.no_csv,
-        csv_base=csv_base,
-        detailed_page_size=args.detailed_page_size if args.detailed_page_size > 0 else None
+        detailed_page_size=args.detailed_page_size if args.detailed_page_size > 0 else None,
+        detailed_per_worker=args.detailed_per_worker if args.detailed_per_worker else None
     )
     
     # Export execution report data for helper script consumption

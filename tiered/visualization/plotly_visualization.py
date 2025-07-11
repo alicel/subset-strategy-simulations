@@ -57,7 +57,7 @@ def create_timeline_visualization(workers: List[Worker]) -> go.Figure:
                         "Duration: %{customdata[0]:.2f} units",
                         "SSTable Count: %{customdata[1]}",
                         "Data Size: %{customdata[2]:.2f} GB",
-                        "<extra>Click and drag to zoom. Double-click to reset.</extra>"
+                        "<extra></extra>"
                     ]),
                     customdata=[[
                         worker.completion_time - worker.start_time,

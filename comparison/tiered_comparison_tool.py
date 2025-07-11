@@ -25,13 +25,17 @@ class TieredMigrationMetrics:
     total_execution_time: float
     total_workers: int
     total_cpus: int  # threads across all workers
-    cpu_time: float  # total thread time used
+    cpu_time: float  # total thread time used (current calculation)
     total_data_size_gb: float  # total data size processed in GB
     workers_by_tier: Dict[str, int]  # tier -> worker count
     cpus_by_tier: Dict[str, int]  # tier -> total threads
     stragglers_by_tier: Dict[str, int]  # tier -> straggler worker count
-    # Configuration data
     config: Dict[str, any]  # simulation and migration configuration
+    # CPU Efficiency metrics
+    total_used_cpu_time: float = 0.0  # total allocated CPU time (duration × threads)
+    total_active_cpu_time: float = 0.0  # total actual processing time
+    cpu_inefficiency: float = 0.0  # idle/wasted CPU time
+    average_cpu_efficiency_percent: float = 0.0  # average efficiency across workers
     
 @dataclass
 class TieredComparisonResult:
@@ -147,7 +151,21 @@ class TieredComparisonResult:
             'large_tier_worker_num_threads': 'large_threads'  # This is always 1
         }
         
-        # First try direct lookup in simulation config
+        # Migration parameters that should be looked up directly in migration config
+        migration_params = {
+            'small_tier_max_sstable_size_gb',
+            'small_tier_thread_subset_max_size_floor_gb',
+            'medium_tier_max_sstable_size_gb',
+            'optimize_packing_medium_subsets',
+            'max_num_sstables_per_subset'
+        }
+        
+        # First check if it's a migration parameter
+        if key in migration_params:
+            if 'migration' in config and key in config['migration']:
+                return config['migration'][key]
+        
+        # Then try direct lookup in simulation config
         if 'simulation' in config and key in config['simulation']:
             return config['simulation'][key]
         
@@ -157,7 +175,7 @@ class TieredComparisonResult:
             if mapped_key in config['simulation']:
                 return config['simulation'][mapped_key]
         
-        # Then try migration config
+        # Also try migration config for other parameters
         if 'migration' in config and key in config['migration']:
             return config['migration'][key]
         
@@ -255,9 +273,9 @@ class TieredSimulationDataExtractor:
             csv_dir = json_file.parent
             workers_csv = None
             
-            for csv_file in csv_dir.glob("*_workers.csv"):
-                workers_csv = csv_file
-                break
+            # Sort glob results to ensure deterministic file selection
+            workers_csv_files = sorted(csv_dir.glob("*_workers.csv"))
+            workers_csv = workers_csv_files[0] if workers_csv_files else None
             
             # Calculate totals across all tiers from JSON
             total_workers = 0
@@ -288,9 +306,14 @@ class TieredSimulationDataExtractor:
                     cpus_by_tier[tier] = 0
                     stragglers_by_tier[tier] = 0
             
-            # Calculate actual CPU time from worker CSV if available
+            # Calculate actual CPU time, efficiency metrics, and total data size from worker CSV if available
             cpu_time = 0.0
             total_data_size_gb = 0.0
+            total_used_cpu_time = 0.0
+            total_active_cpu_time = 0.0
+            cpu_inefficiency = 0.0
+            cpu_efficiency_values = []
+            
             if workers_csv and workers_csv.exists():
                 with open(workers_csv, 'r', encoding='utf-8') as f:
                     reader = csv.DictReader(f)
@@ -300,13 +323,32 @@ class TieredSimulationDataExtractor:
                         threads_per_worker = simulation_config.get(f'{tier.lower()}_threads', 1)
                         cpu_time += duration * threads_per_worker
                         
-                        # Extract data size from CSV
-                        if 'Data_Size_GB' in row:
+                        # Extract data size from CSV (with safety check)
+                        if 'Data_Size_GB' in row and row['Data_Size_GB']:
                             total_data_size_gb += float(row['Data_Size_GB'])
+                        
+                        # Extract efficiency metrics if available (new CSV format)
+                        if 'Total_Used_CPU_Time' in row and 'Total_Active_CPU_Time' in row:
+                            total_used_cpu_time += float(row['Total_Used_CPU_Time'])
+                            total_active_cpu_time += float(row['Total_Active_CPU_Time'])
+                            cpu_inefficiency += float(row['CPU_Inefficiency'])
+                            cpu_efficiency_values.append(float(row['CPU_Efficiency_Percent']))
             else:
                 # Fallback to conservative estimate if CSV not available
                 cpu_time = total_execution_time * total_cpus if total_cpus > 0 else total_execution_time
                 print(f"Warning: Worker CSV not found for {migration_id}, using conservative CPU time estimate")
+            
+            # If we couldn't get data size from CSV, use JSON data as fallback
+            if total_data_size_gb == 0.0:
+                print(f"Warning: No data size found in CSV for {migration_id}. Using JSON data as fallback.")
+                total_data_size_gb = data.get('total_migration_size_gb', 0.0)
+                if total_data_size_gb > 0:
+                    print(f"Found migration size in JSON: {total_data_size_gb:.2f} GB")
+                else:
+                    print(f"Warning: No migration size found in JSON for {migration_id}")
+            
+            # Calculate overall weighted efficiency (more meaningful than simple average)
+            average_cpu_efficiency_percent = (total_active_cpu_time / total_used_cpu_time * 100) if total_used_cpu_time > 0 else 0.0
             
             # Combine simulation config from JSON with execution config
             combined_config = {
@@ -325,6 +367,10 @@ class TieredSimulationDataExtractor:
                 workers_by_tier=workers_by_tier,
                 cpus_by_tier=cpus_by_tier,
                 stragglers_by_tier=stragglers_by_tier,
+                total_used_cpu_time=total_used_cpu_time,
+                total_active_cpu_time=total_active_cpu_time,
+                cpu_inefficiency=cpu_inefficiency,
+                average_cpu_efficiency_percent=average_cpu_efficiency_percent,
                 config=combined_config
             )
             
@@ -542,7 +588,7 @@ class TieredComparisonAnalyzer:
         else:
             return f"{time_units:.1f}"
     
-    def save_comparison_csv(self, comparisons: List[TieredComparisonResult], output_file: str, exec1_name: str = None, exec2_name: str = None, data_size_threshold: float = None):
+    def save_comparison_csv(self, comparisons: List[TieredComparisonResult], output_file: str, exec1_name: str = None, exec2_name: str = None, data_size_threshold: float = None, efficiency_threshold: float = None):
         """Save comparison results to CSV file."""
         with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
             # Write header comments
@@ -555,6 +601,12 @@ class TieredComparisonAnalyzer:
             if data_size_threshold is not None:
                 large_migrations = [comp for comp in comparisons if comp.exec1_metrics.total_data_size_gb >= data_size_threshold]
                 csvfile.write(f"# Large Migrations: {len(large_migrations)} (>= {data_size_threshold} GB)\n")
+                
+            # Efficiency threshold information
+            if efficiency_threshold is not None:
+                low_efficiency_exec1 = sum(1 for comp in comparisons if comp.exec1_metrics.average_cpu_efficiency_percent > 0 and comp.exec1_metrics.average_cpu_efficiency_percent < efficiency_threshold)
+                low_efficiency_exec2 = sum(1 for comp in comparisons if comp.exec2_metrics.average_cpu_efficiency_percent > 0 and comp.exec2_metrics.average_cpu_efficiency_percent < efficiency_threshold)
+                csvfile.write(f"# Low Efficiency Threshold: {efficiency_threshold:.1f}% (Exec1: {low_efficiency_exec1}, Exec2: {low_efficiency_exec2} migrations)\n")
                 
             csvfile.write("# Diff columns show Exec2 - Exec1 (positive = Exec2 higher, negative = Exec2 lower)\n")
             csvfile.write("# Data size is the same for both executions (same data processed)\n")
@@ -591,6 +643,8 @@ class TieredComparisonAnalyzer:
                 'Exec1_Workers', 'Exec2_Workers', 'Worker_Diff',
                 'Exec1_CPUs', 'Exec2_CPUs', 'CPU_Diff',
                 'Exec1_CPU_Time', 'Exec2_CPU_Time', 'CPU_Time_Diff',
+                'Exec1_CPU_Active_Time', 'Exec1_CPU_Efficiency_Percent', 'Exec1_CPU_Waste_Percent',
+                'Exec2_CPU_Active_Time', 'Exec2_CPU_Efficiency_Percent', 'Exec2_CPU_Waste_Percent',
                 'Exec1_Small_Workers', 'Exec1_Medium_Workers', 'Exec1_Large_Workers',
                 'Exec1_Small_Stragglers', 'Exec1_Medium_Stragglers', 'Exec1_Large_Stragglers',
                 'Exec1_Small_CPUs', 'Exec1_Medium_CPUs', 'Exec1_Large_CPUs',
@@ -602,6 +656,10 @@ class TieredComparisonAnalyzer:
             # Add Is_Large_Migration column if threshold is specified
             if data_size_threshold is not None:
                 fieldnames.append('Is_Large_Migration')
+                
+            # Add efficiency flag columns if threshold is specified
+            if efficiency_threshold is not None:
+                fieldnames.extend(['Exec1_Is_Low_Efficiency', 'Exec2_Is_Low_Efficiency'])
             
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
@@ -610,6 +668,10 @@ class TieredComparisonAnalyzer:
             for comp in comparisons:
                 exec1 = comp.exec1_metrics
                 exec2 = comp.exec2_metrics
+                
+                # Calculate efficiency percentages
+                exec1_waste_percent = (exec1.cpu_inefficiency / exec1.total_used_cpu_time * 100) if exec1.total_used_cpu_time > 0 else 0
+                exec2_waste_percent = (exec2.cpu_inefficiency / exec2.total_used_cpu_time * 100) if exec2.total_used_cpu_time > 0 else 0
                 
                 row = {
                     'Migration_ID': comp.migration_id,
@@ -626,6 +688,12 @@ class TieredComparisonAnalyzer:
                     'Exec1_CPU_Time': f"{exec1.cpu_time:.2f}",
                     'Exec2_CPU_Time': f"{exec2.cpu_time:.2f}",
                     'CPU_Time_Diff': f"{comp.cpu_time_diff:.2f}",
+                    'Exec1_CPU_Active_Time': f"{exec1.total_active_cpu_time:.2f}",
+                    'Exec1_CPU_Efficiency_Percent': f"{exec1.average_cpu_efficiency_percent:.2f}",
+                    'Exec1_CPU_Waste_Percent': f"{exec1_waste_percent:.2f}",
+                    'Exec2_CPU_Active_Time': f"{exec2.total_active_cpu_time:.2f}",
+                    'Exec2_CPU_Efficiency_Percent': f"{exec2.average_cpu_efficiency_percent:.2f}",
+                    'Exec2_CPU_Waste_Percent': f"{exec2_waste_percent:.2f}",
                     'Exec1_Small_Workers': exec1.workers_by_tier.get('SMALL', 0),
                     'Exec1_Medium_Workers': exec1.workers_by_tier.get('MEDIUM', 0),
                     'Exec1_Large_Workers': exec1.workers_by_tier.get('LARGE', 0),
@@ -649,6 +717,11 @@ class TieredComparisonAnalyzer:
                 # Add large migration flag if threshold is specified
                 if data_size_threshold is not None:
                     row['Is_Large_Migration'] = 'Yes' if exec1.total_data_size_gb >= data_size_threshold else 'No'
+                    
+                # Add efficiency flags if threshold is specified
+                if efficiency_threshold is not None:
+                    row['Exec1_Is_Low_Efficiency'] = 'Yes' if (exec1.average_cpu_efficiency_percent > 0 and exec1.average_cpu_efficiency_percent < efficiency_threshold) else 'No'
+                    row['Exec2_Is_Low_Efficiency'] = 'Yes' if (exec2.average_cpu_efficiency_percent > 0 and exec2.average_cpu_efficiency_percent < efficiency_threshold) else 'No'
                 
                 writer.writerow(row)
         
@@ -822,8 +895,8 @@ class TieredComparisonAnalyzer:
             f.write(report_content)
         
         print(f"Text comparison report saved to: {output_file}")
-
-    def generate_html_report(self, comparisons: List[TieredComparisonResult], exec1_name: str = None, exec2_name: str = None, exec1_only: Set[str] = None, exec2_only: Set[str] = None, data_size_threshold: float = None) -> str:
+    
+    def generate_html_report(self, comparisons: List[TieredComparisonResult], exec1_name: str = None, exec2_name: str = None, exec1_only: Set[str] = None, exec2_only: Set[str] = None, data_size_threshold: float = None, efficiency_threshold: float = None) -> str:
         """Generate an HTML comparison report for browser viewing."""
         if not comparisons:
             return "<html><body><h1>No comparisons to display.</h1></body></html>"
@@ -859,12 +932,18 @@ class TieredComparisonAnalyzer:
         .config-different {{ background-color: #ffe8e8 !important; }}
         .has-stragglers {{ background-color: #ffcccc !important; }} /* Light red for cells with stragglers */
         .large-migration {{ background-color: #ffe4b5 !important; border-left: 4px solid #ff8c00 !important; }}
+        .low-efficiency {{ background-color: #ffff00 !important; font-weight: bold; }} /* Bright yellow for low efficiency migrations */
+        .best-efficiency {{ background-color: #c8e6c9 !important; font-weight: bold; }} /* Light green for best efficiency */
         
         table {{ border-collapse: collapse; width: 100%; margin-bottom: 20px; background-color: white; }}
         th, td {{ border: 1px solid #ddd; padding: 10px; text-align: left; }}
         th {{ background-color: #f2f2f2; font-weight: bold; }}
         tr:nth-child(even) {{ background-color: #f9f9f9; }}
         tr:hover {{ background-color: #f0f0f0; }}
+        
+        /* Thicker borders for metric group separators */
+        .group-separator-left {{ border-left: 3px solid #333 !important; }}
+        .group-separator-right {{ border-right: 3px solid #333 !important; }}
         
         .migration-details {{ margin-top: 20px; }}
         .best-time {{ background-color: #c8e6c9 !important; font-weight: bold; }}
@@ -902,6 +981,12 @@ class TieredComparisonAnalyzer:
             large_migrations = [comp for comp in comparisons if comp.exec1_metrics.total_data_size_gb >= data_size_threshold]
             html += f"""
     <p><strong>Large Migrations:</strong> {len(large_migrations)} (>= {data_size_threshold} GB)</p>"""
+        
+        if efficiency_threshold is not None:
+            low_efficiency_exec1 = sum(1 for comp in comparisons if comp.exec1_metrics.average_cpu_efficiency_percent > 0 and comp.exec1_metrics.average_cpu_efficiency_percent < efficiency_threshold)
+            low_efficiency_exec2 = sum(1 for comp in comparisons if comp.exec2_metrics.average_cpu_efficiency_percent > 0 and comp.exec2_metrics.average_cpu_efficiency_percent < efficiency_threshold)
+            html += f"""
+    <p><strong>Low Efficiency Threshold:</strong> {efficiency_threshold:.1f}% (Exec1: {low_efficiency_exec1}, Exec2: {low_efficiency_exec2} migrations)</p>"""
         
         if exec1_only or exec2_only:
             html += f"""</div>
@@ -967,39 +1052,62 @@ class TieredComparisonAnalyzer:
         <span style="background-color: #ffe4b5; padding: 2px 6px; border-radius: 3px; border-left: 4px solid #ff8c00;">Orange highlighting</span> indicates large migrations (>= {data_size_threshold} GB)
     </p>"""
         
+        # Add legend for efficiency highlighting if threshold is specified
+        if efficiency_threshold is not None:
+            efficiency_legend_text = f'<span style="background-color: #ffff00; padding: 2px 6px; border-radius: 3px; font-weight: bold;">Yellow highlighting</span> indicates low efficiency migrations (< {efficiency_threshold}%)'
+            if data_size_threshold is not None:
+                # Extend existing legend by finding the specific legend paragraph
+                legend_marker = 'indicates large migrations'
+                if legend_marker in html:
+                    html = html.replace(f'{legend_marker} (>= {data_size_threshold} GB)\n    </p>', f'{legend_marker} (>= {data_size_threshold} GB), {efficiency_legend_text}\n    </p>')
+            else:
+                # Create new legend
+                html += f"""
+    <p><strong>Legend:</strong> 
+        {efficiency_legend_text}
+    </p>"""
+        
         html += """
     <table>
         <thead>
             <tr>
                 <th rowspan="2">Migration ID</th>
                 <th rowspan="2">Data Size (GB)</th>
-                <th colspan="3">Execution Time</th>
-                <th colspan="3">Workers</th>
-                <th colspan="3">CPUs</th>
-                <th colspan="3">CPU Time</th>
-                <th colspan="6">Exec1 Tier Distribution</th>
-                <th colspan="6">Exec2 Tier Distribution</th>
+                <th colspan="3" class="group-separator-left">Execution Time</th>
+                <th colspan="3" class="group-separator-left">Workers</th>
+                <th colspan="3" class="group-separator-left">CPUs</th>
+                <th colspan="3" class="group-separator-left">CPU Time</th>
+                <th colspan="3" class="group-separator-left">CPU Efficiency (Exec1)</th>
+                <th colspan="3" class="group-separator-left">CPU Efficiency (Exec2)</th>
+                <th colspan="6" class="group-separator-left">Exec1 Tier Distribution</th>
+                <th colspan="6" class="group-separator-left">Exec2 Tier Distribution</th>
             </tr>
             <tr>
-                <th>Exec1</th>
+                <th class="group-separator-left">Exec1</th>
                 <th>Exec2</th>
                 <th class="diff-header">Diff</th>
-                <th>Exec1</th>
+                <th class="group-separator-left">Exec1</th>
                 <th>Exec2</th>
                 <th class="diff-header">Diff</th>
-                <th>Exec1</th>
+                <th class="group-separator-left">Exec1</th>
                 <th>Exec2</th>
                 <th class="diff-header">Diff</th>
-                <th>Exec1</th>
+                <th class="group-separator-left">Exec1</th>
                 <th>Exec2</th>
                 <th class="diff-header">Diff</th>
-                <th>Small W</th>
+                <th class="group-separator-left">Active Time</th>
+                <th>Eff %</th>
+                <th>Waste %</th>
+                <th class="group-separator-left">Active Time</th>
+                <th>Eff %</th>
+                <th>Waste %</th>
+                <th class="group-separator-left">Small W</th>
                 <th>Med W</th>
                 <th>Large W</th>
                 <th>Small C</th>
                 <th>Med C</th>
                 <th>Large C</th>
-                <th>Small W</th>
+                <th class="group-separator-left">Small W</th>
                 <th>Med W</th>
                 <th>Large W</th>
                 <th>Small C</th>
@@ -1009,8 +1117,11 @@ class TieredComparisonAnalyzer:
         </thead>
         <tbody>"""
         
+        # Sort comparisons by data size (descending) before processing
+        comparisons_sorted = sorted(comparisons, key=lambda comp: comp.exec1_metrics.total_data_size_gb, reverse=True)
+        
         # Process each comparison and determine best values for highlighting
-        for comp in comparisons:
+        for comp in comparisons_sorted:
             exec1 = comp.exec1_metrics
             exec2 = comp.exec2_metrics
             
@@ -1095,30 +1206,67 @@ class TieredComparisonAnalyzer:
             is_large_migration = data_size_threshold is not None and exec1.total_data_size_gb >= data_size_threshold
             migration_id_class = "large-migration" if is_large_migration else ""
             data_size_class = "large-migration" if is_large_migration else ""
+            
+            # Calculate efficiency metrics and determine low efficiency highlighting
+            exec1_inefficiency_percent = (exec1.cpu_inefficiency / exec1.total_used_cpu_time * 100) if exec1.total_used_cpu_time > 0 else 0
+            exec2_inefficiency_percent = (exec2.cpu_inefficiency / exec2.total_used_cpu_time * 100) if exec2.total_used_cpu_time > 0 else 0
+            
+            # Determine efficiency highlighting
+            exec1_is_low_efficiency = (efficiency_threshold is not None and 
+                                     exec1.average_cpu_efficiency_percent > 0 and 
+                                     exec1.average_cpu_efficiency_percent < efficiency_threshold)
+            exec2_is_low_efficiency = (efficiency_threshold is not None and 
+                                     exec2.average_cpu_efficiency_percent > 0 and 
+                                     exec2.average_cpu_efficiency_percent < efficiency_threshold)
+            
+            exec1_efficiency_class = "low-efficiency" if exec1_is_low_efficiency else ""
+            exec2_efficiency_class = "low-efficiency" if exec2_is_low_efficiency else ""
+            
+            # Determine best efficiency percentage highlighting (separate from low-efficiency highlighting)
+            exec1_efficiency_percent_class = exec1_efficiency_class  # Start with low-efficiency class if applicable
+            exec2_efficiency_percent_class = exec2_efficiency_class  # Start with low-efficiency class if applicable
+            
+            # Add best efficiency highlighting only to percentage columns (only if not already low-efficiency)
+            if (exec1.average_cpu_efficiency_percent > 0 and exec2.average_cpu_efficiency_percent > 0 and 
+                exec1.average_cpu_efficiency_percent != exec2.average_cpu_efficiency_percent):
+                if exec1.average_cpu_efficiency_percent > exec2.average_cpu_efficiency_percent:
+                    # Exec1 has better efficiency, highlight only if not low efficiency
+                    if not exec1_is_low_efficiency:
+                        exec1_efficiency_percent_class = "best-efficiency"
+                else:
+                    # Exec2 has better efficiency, highlight only if not low efficiency  
+                    if not exec2_is_low_efficiency:
+                        exec2_efficiency_percent_class = "best-efficiency"
 
             html += f"""
             <tr>
                 <td class="{migration_id_class}"><strong>{comp.migration_id}</strong></td>
                 <td class="number {data_size_class}">{exec1.total_data_size_gb:.1f}</td>
-                <td class="number {'best-time' if best_exec_time == 'exec1' else ''}">{exec1_time_str}</td>
+                <td class="number group-separator-left {'best-time' if best_exec_time == 'exec1' else ''}">{exec1_time_str}</td>
                 <td class="number {'best-time' if best_exec_time == 'exec2' else ''}">{exec2_time_str}</td>
                 <td class="number {exec_time_diff_class}">{exec_time_diff_str}</td>
-                <td class="number">{exec1.total_workers:,}</td>
+                <td class="number group-separator-left">{exec1.total_workers:,}</td>
                 <td class="number">{exec2.total_workers:,}</td>
                 <td class="number {worker_diff_class}">{worker_diff_str}</td>
-                <td class="number">{exec1.total_cpus:,}</td>
+                <td class="number group-separator-left">{exec1.total_cpus:,}</td>
                 <td class="number">{exec2.total_cpus:,}</td>
                 <td class="number {cpu_diff_class}">{cpu_diff_str}</td>
-                <td class="number {'best-time' if best_cpu_time == 'exec1' else ''}">{exec1_cpu_time_str}</td>
+                <td class="number group-separator-left {'best-time' if best_cpu_time == 'exec1' else ''}">{exec1_cpu_time_str}</td>
                 <td class="number {'best-time' if best_cpu_time == 'exec2' else ''}">{exec2_cpu_time_str}</td>
                 <td class="number {cpu_time_diff_class}">{cpu_time_diff_str}</td>
-                <td class="number {exec1_small_w_class}">{exec1_small_w}</td>
+                <td class="number group-separator-left {exec1_efficiency_class}">{exec1.total_active_cpu_time:.1f}s</td>
+                <td class="number {exec1_efficiency_percent_class}">{exec1.average_cpu_efficiency_percent:.1f}%</td>
+                <td class="number {exec1_efficiency_class}">{exec1_inefficiency_percent:.1f}%</td>
+                <td class="number group-separator-left {exec2_efficiency_class}">{exec2.total_active_cpu_time:.1f}s</td>
+                <td class="number {exec2_efficiency_percent_class}">{exec2.average_cpu_efficiency_percent:.1f}%</td>
+                <td class="number {exec2_efficiency_class}">{exec2_inefficiency_percent:.1f}%</td>
+                <td class="number group-separator-left {exec1_small_w_class}">{exec1_small_w}</td>
                 <td class="number {exec1_medium_w_class}">{exec1_medium_w}</td>
                 <td class="number {exec1_large_w_class}">{exec1_large_w}</td>
                 <td class="number">{exec1.cpus_by_tier.get('SMALL', 0):,}</td>
                 <td class="number">{exec1.cpus_by_tier.get('MEDIUM', 0):,}</td>
                 <td class="number">{exec1.cpus_by_tier.get('LARGE', 0):,}</td>
-                <td class="number {exec2_small_w_class}">{exec2_small_w}</td>
+                <td class="number group-separator-left {exec2_small_w_class}">{exec2_small_w}</td>
                 <td class="number {exec2_medium_w_class}">{exec2_medium_w}</td>
                 <td class="number {exec2_large_w_class}">{exec2_large_w}</td>
                 <td class="number">{exec2.cpus_by_tier.get('SMALL', 0):,}</td>
@@ -1133,11 +1281,16 @@ class TieredComparisonAnalyzer:
 
 <div class="aggregate">
     <h2>Legend</h2>
-    <p><span style="background-color: #c8e6c9; padding: 2px 6px; border-radius: 3px;">Green highlighting</span> indicates the best (lowest) execution time, CPU time, and their corresponding best ratios for each migration.</p>
+    <p><span style="background-color: #c8e6c9; padding: 2px 6px; border-radius: 3px;">Green highlighting</span> indicates the best (lowest) execution time, CPU time, and best CPU efficiency for each migration.</p>
     <p><strong>Column Abbreviations:</strong></p>
     <ul>
         <li><strong>W:</strong> Workers (number of workers allocated to each tier)</li>
         <li><strong>C:</strong> CPUs/Cores (total threads allocated to each tier = workers × threads per worker)</li>
+    </ul>
+    <p><strong>CPU Efficiency Highlighting:</strong></p>
+    <ul>
+        <li><span style="background-color: #c8e6c9; padding: 2px 6px; border-radius: 3px; font-weight: bold;">Light green</span> indicates the execution with better CPU efficiency percentage for each migration</li>
+        <li><span style="background-color: #ffff00; padding: 2px 6px; border-radius: 3px; font-weight: bold;">Yellow highlighting</span> takes priority and indicates low efficiency percentage (below threshold) in the "Eff %" columns only</li>
     </ul>
     <p><strong>Straggler Information:</strong></p>
     <ul>
@@ -1225,9 +1378,9 @@ class TieredComparisonAnalyzer:
         
         return html
 
-    def save_html_report(self, comparisons: List[TieredComparisonResult], output_file: str, exec1_name: str = None, exec2_name: str = None, exec1_only: Set[str] = None, exec2_only: Set[str] = None, data_size_threshold: float = None):
+    def save_html_report(self, comparisons: List[TieredComparisonResult], output_file: str, exec1_name: str = None, exec2_name: str = None, exec1_only: Set[str] = None, exec2_only: Set[str] = None, data_size_threshold: float = None, efficiency_threshold: float = None):
         """Save the HTML comparison report to a file."""
-        html_content = self.generate_html_report(comparisons, exec1_name, exec2_name, exec1_only, exec2_only, data_size_threshold)
+        html_content = self.generate_html_report(comparisons, exec1_name, exec2_name, exec1_only, exec2_only, data_size_threshold, efficiency_threshold)
         
         with open(output_file, 'w', encoding='utf-8') as f:
             f.write(html_content)
@@ -1321,6 +1474,11 @@ Examples:
     parser.add_argument('--data-size-threshold', type=float,
                        help='Highlight migrations with data size >= this threshold (in GB). Example: --data-size-threshold 5.0')
     
+    # CPU efficiency threshold for highlighting inefficient migrations
+    parser.add_argument('--efficiency-threshold',
+                       type=float,
+                       help='Highlight tiered migrations with CPU efficiency < this threshold (in %%). Example: --efficiency-threshold 70.0')
+    
     args = parser.parse_args()
     
     # No validation needed - organized reports are created automatically when comparison name is provided
@@ -1397,9 +1555,9 @@ Examples:
             html_file = f"{output_dir}/tiered_comparison_report_{args.comparison_exec_name}.html"
             
             # Save all report formats
-            analyzer.save_comparison_csv(comparisons, csv_file, exec1_name, exec2_name, args.data_size_threshold)
+            analyzer.save_comparison_csv(comparisons, csv_file, exec1_name, exec2_name, args.data_size_threshold, args.efficiency_threshold)
             analyzer.save_comparison_report(comparisons, txt_file, exec1_name, exec2_name, exec1_only, exec2_only, args.data_size_threshold)
-            analyzer.save_html_report(comparisons, html_file, exec1_name, exec2_name, exec1_only, exec2_only, args.data_size_threshold)
+            analyzer.save_html_report(comparisons, html_file, exec1_name, exec2_name, exec1_only, exec2_only, args.data_size_threshold, args.efficiency_threshold)
             
             print(f"Tiered comparison analysis saved to: {output_dir}/")
         

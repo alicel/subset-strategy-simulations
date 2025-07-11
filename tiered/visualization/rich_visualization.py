@@ -14,6 +14,23 @@ from rich.layout import Layout
 from rich import box
 from rich.measure import Measurement
 
+def get_worker_efficiency(worker: Worker) -> float:
+    """Calculate worker CPU efficiency percentage."""
+    if not worker.threads:
+        return 0.0
+    
+    # Calculate worker duration and total used CPU time
+    worker_duration = worker.completion_time - worker.start_time
+    total_used_cpu_time = worker_duration * worker.num_threads
+    
+    # Calculate total active CPU time (sum of actual thread processing times)
+    total_active_cpu_time = sum(thread.total_processing_time for thread in worker.threads)
+    
+    # Calculate efficiency percentage
+    efficiency_percent = (total_active_cpu_time / total_used_cpu_time * 100) if total_used_cpu_time > 0 else 0.0
+    
+    return efficiency_percent
+
 def create_worker_timeline(worker: Worker, total_width: int = 200) -> Table:
     """Create a detailed timeline visualization for a single worker's threads."""
     if not worker.threads:
@@ -116,6 +133,9 @@ def create_global_timeline(workers: List[Worker], min_width: int = 200) -> Table
             
         table.add_row(tier.value, "", style="bold")
         for worker in tier_workers:
+            # Calculate efficiency for this worker
+            efficiency = get_worker_efficiency(worker)
+            
             timeline = ["·"] * min_width
             start_pos = int(((worker.start_time - global_start) / duration) * min_width)
             end_pos = int(((worker.completion_time - global_start) / duration) * min_width)
@@ -131,15 +151,32 @@ def create_global_timeline(workers: List[Worker], min_width: int = 200) -> Table
             if start_pos > 0:
                 timeline_text.append("".join(timeline[:start_pos]), style="dim")
             
-            # Add the execution bar
+            # Add the execution bar with efficiency-based color
             bar_text = ["━"] * (end_pos - start_pos)
-            timeline_text.append("".join(bar_text), style="bright_blue bold")
+            if efficiency >= 80:
+                bar_style = "bright_green bold"  # High efficiency
+            elif efficiency >= 60:
+                bar_style = "bright_blue bold"   # Medium efficiency
+            elif efficiency >= 40:
+                bar_style = "yellow bold"        # Low efficiency
+            elif efficiency > 0:
+                bar_style = "red bold"           # Very low efficiency
+            else:
+                bar_style = "dim red"            # No efficiency data
+            
+            timeline_text.append("".join(bar_text), style=bar_style)
             
             # Add the part after the bar
             if end_pos < min_width:
                 timeline_text.append("".join(timeline[end_pos:]), style="dim")
             
-            table.add_row(f"  Subset {worker.worker_id:2d}", timeline_text)
+            # Create worker label with efficiency
+            if efficiency > 0:
+                worker_label = f"  Subset {worker.worker_id:2d} ({efficiency:.1f}%)"
+            else:
+                worker_label = f"  Subset {worker.worker_id:2d} (N/A)"
+            
+            table.add_row(worker_label, timeline_text)
         
         table.add_row("", "")  # Add spacing between tiers
     
@@ -209,13 +246,27 @@ def print_rich_visualization(workers: List[Worker], show_details: bool = True):
     # Show detailed timelines if requested
     if show_details:
         console.line()
-        console.rule("[bold]Detailed Worker Timelines")
+        console.rule("[bold]Detailed Worker Timelines with CPU Efficiency")
+        
         for worker in workers:
             timeline = create_worker_timeline(worker)
             if timeline:
+                # Calculate efficiency for subtitle
+                efficiency = get_worker_efficiency(worker) if worker.threads else 0.0
+                
+                # Calculate CPU metrics for subtitle
+                worker_duration = worker.completion_time - worker.start_time
+                total_used_cpu_time = worker_duration * worker.num_threads if worker.threads else 0.0
+                total_active_cpu_time = sum(thread.total_processing_time for thread in worker.threads) if worker.threads else 0.0
+                
+                if efficiency > 0:
+                    subtitle = f"[dim]Duration: {worker_duration:.1f} units | CPU Efficiency: {efficiency:.1f}% | Used: {total_used_cpu_time:.1f} | Active: {total_active_cpu_time:.1f} | Waste: {total_used_cpu_time - total_active_cpu_time:.1f}"
+                else:
+                    subtitle = f"[dim]Processing time: {worker_duration:.1f} units | CPU Efficiency: N/A"
+                
                 console.print(Panel(
                     timeline,
                     title=f"Worker {worker.worker_id} ({worker.tier.value})",
-                    subtitle=f"[dim]Processing time: {worker.completion_time - worker.start_time:.1f} units"
+                    subtitle=subtitle
                 ))
                 console.line() 

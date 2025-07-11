@@ -1,4 +1,4 @@
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 from dataclasses import dataclass
 from heapq import heappush, heappop
 from .file_processor import FileMetadata, parse_input_files
@@ -182,6 +182,63 @@ class Worker:
             "completion_time_spread": max_completion_time - min_completion_time,
             "straggler_details": straggler_details
         }
+
+    def get_cpu_efficiency_metrics(self) -> Dict[str, float]:
+        """Calculate CPU efficiency metrics for this worker.
+        
+        Returns:
+            Dictionary containing:
+            - total_used_cpu_time: worker_duration * num_threads (all CPUs allocated)
+            - total_active_cpu_time: sum of actual thread processing times
+            - cpu_inefficiency: difference between used and active (idle CPU time)
+            - cpu_efficiency_percent: percentage of CPU time actually used for work
+        """
+        if not self.threads:
+            return {
+                'total_used_cpu_time': 0.0,
+                'total_active_cpu_time': 0.0,
+                'cpu_inefficiency': 0.0,
+                'cpu_efficiency_percent': 0.0
+            }
+        
+        # Calculate worker duration (completion_time - start_time)
+        worker_duration = self.completion_time - self.start_time
+        
+        # Total Used CPU Time: All threads allocated for the entire worker duration
+        total_used_cpu_time = worker_duration * self.num_threads
+        
+        # Total Active CPU Time: Sum of actual processing time across all threads
+        total_active_cpu_time = sum(thread.total_processing_time for thread in self.threads)
+        
+        # CPU Inefficiency: Idle/wasted CPU time
+        cpu_inefficiency = total_used_cpu_time - total_active_cpu_time
+        
+        # CPU Efficiency Percentage: How much of allocated CPU time was actually used
+        cpu_efficiency_percent = (total_active_cpu_time / total_used_cpu_time * 100) if total_used_cpu_time > 0 else 0.0
+        
+        return {
+            'total_used_cpu_time': total_used_cpu_time,
+            'total_active_cpu_time': total_active_cpu_time,
+            'cpu_inefficiency': cpu_inefficiency,
+            'cpu_efficiency_percent': cpu_efficiency_percent
+        }
+
+    def get_total_sstable_size(self) -> int:
+        """Calculate the total size of all SSTables processed by this worker.
+        
+        Returns:
+            Total size in bytes of all SSTables processed by this worker's threads.
+            Returns 0 if no threads or no work was processed.
+        """
+        if not self.threads:
+            return 0
+        
+        total_size = 0
+        for thread in self.threads:
+            for item in thread.processed_items:
+                total_size += item.size
+        
+        return total_size
 
 class MultiTierSimulation:
     def __init__(self, config: WorkerConfig, straggler_threshold_percent: float = 20.0, 
@@ -506,14 +563,19 @@ class MultiTierSimulation:
         worker_file = f"{base_filename}_workers.csv"
         with open(worker_file, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            # Header row
+            # Header row - including new CPU efficiency metrics
             writer.writerow([
                 'Worker_ID', 'Tier', 'Start_Time', 'End_Time', 'Duration', 
-                'SSTable_Count', 'Data_Size_GB', 'Is_Straggler_Worker'
+                'SSTable_Count', 'Data_Size_GB', 'Is_Straggler_Worker',
+                'Num_Threads', 'Total_Used_CPU_Time', 'Total_Active_CPU_Time',
+                'CPU_Inefficiency', 'CPU_Efficiency_Percent'
             ])
             
             # Worker data rows
             for worker in self.completed_workers:
+                efficiency_metrics = worker.get_cpu_efficiency_metrics()
+                # Use calculated SSTable size instead of file metadata size
+                total_sstable_size = worker.get_total_sstable_size()
                 writer.writerow([
                     worker.worker_id,
                     worker.tier.value,
@@ -521,8 +583,13 @@ class MultiTierSimulation:
                     f"{worker.completion_time:.2f}",
                     f"{worker.completion_time - worker.start_time:.2f}",
                     worker.file.num_sstables if worker.file else 0,
-                    f"{worker.file.data_size / (1024*1024*1024):.2f}" if worker.file else "0.00",
-                    worker.is_straggler_worker
+                    f"{total_sstable_size / (1024*1024*1024):.2f}",
+                    worker.is_straggler_worker,
+                    worker.num_threads,
+                    f"{efficiency_metrics['total_used_cpu_time']:.2f}",
+                    f"{efficiency_metrics['total_active_cpu_time']:.2f}",
+                    f"{efficiency_metrics['cpu_inefficiency']:.2f}",
+                    f"{efficiency_metrics['cpu_efficiency_percent']:.1f}"
                 ])
         
         # Export thread-level data (detailed visualization data)
@@ -590,7 +657,7 @@ class MultiTierSimulation:
         print(f"- Thread/task data: {thread_file}")
         print(f"- Summary statistics: {summary_file}")
 
-    def print_results(self, output_file: str = "simulation_results.html", show_details: bool = True, show_stragglers: bool = True, export_csv: bool = True, csv_base: str = None, detailed_page_size: int = None):
+    def print_results(self, output_file: str = "simulation_results.html", show_details: bool = True, show_stragglers: bool = True, export_csv: bool = True, csv_base: str = None, detailed_page_size: int = None, detailed_per_worker: bool = None):
         """Print simulation results and save visualization."""
         print("\nSimulation Results:")
         print(f"Total workers: {len(self.completed_workers)}")
@@ -611,12 +678,39 @@ class MultiTierSimulation:
         
         save_timeline_visualization(self.completed_workers, timeline_file)
         if show_details:
-            save_detailed_visualization(self.completed_workers, detailed_file, detailed_page_size)
+            # Auto-detect if we should use per-worker mode based on migration size
+            if detailed_per_worker is None:
+                # Use per-worker mode for migrations with multiple workers (>5 workers or significant thread count)
+                total_threads = sum(w.num_threads for w in self.completed_workers)
+                use_per_worker = len(self.completed_workers) > 5 or total_threads > 25
+            else:
+                use_per_worker = detailed_per_worker
+            
+            if use_per_worker:
+                print(f"\nUsing per-worker detailed visualization mode (recommended for large migrations)")
+                print(f"Total workers: {len(self.completed_workers)}, Total threads: {sum(w.num_threads for w in self.completed_workers)}")
+                save_detailed_visualization(self.completed_workers, detailed_file, per_worker=True)
+            else:
+                save_detailed_visualization(self.completed_workers, detailed_file, detailed_page_size)
+        
         print(f"\nVisualization saved to {output_file}")
         print("Open this file in your web browser to view the interactive timeline visualization.")
-        if show_details and detailed_page_size and detailed_page_size > 0 and len(self.completed_workers) > detailed_page_size:
-            print(f"\nDetailed visualization has been split into multiple pages ({detailed_page_size} workers per page)")
-            print("Use the navigation buttons to browse between pages")
+        
+        if show_details:
+            if detailed_per_worker is None:
+                total_threads = sum(w.num_threads for w in self.completed_workers)
+                use_per_worker = len(self.completed_workers) > 5 or total_threads > 25
+            else:
+                use_per_worker = detailed_per_worker
+                
+            if use_per_worker:
+                print(f"\nDetailed visualization has been split by worker for better performance")
+                print(f"Start browsing from: {detailed_file}")
+                print("Click 'Browse All Workers' to access individual worker details")
+            elif detailed_page_size and detailed_page_size > 0 and len(self.completed_workers) > detailed_page_size:
+                print(f"\nDetailed visualization has been split into multiple pages ({detailed_page_size} workers per page)")
+                print("Use the navigation buttons to browse between pages")
+        
         print("\nFeatures available in the visualization:")
         print("- Zoom and pan using mouse wheel and drag")
         print("- Hover over bars to see detailed information")
@@ -783,7 +877,7 @@ class MultiTierSimulation:
         
         return analysis
 
-    def get_execution_report_data(self) -> Dict[str, any]:
+    def get_execution_report_data(self) -> Dict[str, Any]:
         """
         Get comprehensive execution report data for this simulation.
         
@@ -793,8 +887,14 @@ class MultiTierSimulation:
         if not self.simulation_completed:
             raise SimulationError("Simulation must be completed before generating execution report")
         
+        # Calculate total migration size from all workers
+        total_migration_size_bytes = sum(worker.get_total_sstable_size() for worker in self.completed_workers)
+        total_migration_size_gb = total_migration_size_bytes / (1024 * 1024 * 1024)
+        
         report_data = {
             "total_execution_time": self.current_time,
+            "total_migration_size_bytes": total_migration_size_bytes,
+            "total_migration_size_gb": total_migration_size_gb,
             "simulation_config": {
                 "small_threads": self.config.small.num_threads,
                 "medium_threads": self.config.medium.num_threads,

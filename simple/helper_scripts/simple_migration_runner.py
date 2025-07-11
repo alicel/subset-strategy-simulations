@@ -239,15 +239,40 @@ class SimpleMigrationRunner:
         os.makedirs(local_dir, exist_ok=True)
         
         try:
-            # List objects in the S3 bucket with the specified prefix
-            response = self.s3_client.list_objects_v2(Bucket=self.bucket_name, Prefix=s3_path)
+            # List objects in the S3 bucket with the specified prefix (with pagination support)
+            all_objects = []
+            continuation_token = None
             
-            if 'Contents' not in response:
+            while True:
+                # Build the list_objects_v2 request
+                list_kwargs = {
+                    'Bucket': self.bucket_name,
+                    'Prefix': s3_path
+                }
+                if continuation_token:
+                    list_kwargs['ContinuationToken'] = continuation_token
+                
+                response = self.s3_client.list_objects_v2(**list_kwargs)
+                
+                # Add objects from this page to our collection
+                if 'Contents' in response:
+                    all_objects.extend(response['Contents'])
+                
+                # Check if there are more pages
+                if response.get('IsTruncated', False):
+                    continuation_token = response.get('NextContinuationToken')
+                    logger.debug(f"Found {len(response['Contents'])} objects in this page, continuing with next page...")
+                else:
+                    break
+            
+            if not all_objects:
                 logger.warning(f"No objects found in S3 bucket {self.bucket_name} with prefix {s3_path}")
                 return None
             
+            logger.info(f"Found {len(all_objects)} objects total in S3 (pagination handled)")
+            
             downloaded_count = 0
-            for obj in response['Contents']:
+            for obj in all_objects:
                 # Extract relative path from S3 key by removing the migration_id prefix
                 s3_key = obj['Key']
                 
@@ -367,6 +392,8 @@ class SimpleMigrationRunner:
         worker_config = sim_config.get('worker_config', {})
         if 'max_concurrent_workers' in worker_config:
             command_args.extend(['--max-concurrent-workers', str(worker_config['max_concurrent_workers'])])
+        if 'threads_per_worker' in worker_config:
+            command_args.extend(['--threads-per-worker', str(worker_config['threads_per_worker'])])
         
         # Output configuration
         output_config = sim_config.get('output', {})
@@ -439,6 +466,21 @@ class SimpleMigrationRunner:
                     output_files['plotly_details'] = f"{plotly_base}_details.html"
                     # output_files['plotly_distribution'] = f"{plotly_base}_distribution.html"  # Disabled per request
             
+            # CRITICAL FIX: Verify that the expected files actually exist
+            # The subprocess might return success but fail to create files due to permissions, disk space, etc.
+            missing_files = []
+            for file_type, file_path in output_files.items():
+                if not os.path.exists(file_path):
+                    missing_files.append(f"{file_type}: {file_path}")
+            
+            if missing_files:
+                logger.error(f"Simulation subprocess succeeded but expected output files are missing for {migration_id}:")
+                for missing_file in missing_files:
+                    logger.error(f"  Missing: {missing_file}")
+                logger.error(f"This indicates a file system issue during simulation execution")
+                return False, {}
+            
+            logger.info(f"All expected output files verified for {migration_id}")
             return True, output_files
             
         except subprocess.CalledProcessError as e:
@@ -506,16 +548,71 @@ class SimpleMigrationRunner:
         return successful, failed, migration_results
     
     def collect_execution_report_data(self, migration_results: dict) -> dict:
-        """Collect data for execution report."""
+        """Collect data for execution report, including migration size data from JSON files."""
+        import json
+        import os
+        
         execution_data = {
             'total_migrations': len(migration_results),
-            'migrations': migration_results,
+            'migrations': {},
             'summary': {
                 'successful': len(migration_results),
                 'failed': 0,  # Assuming only successful ones are in migration_results
                 'total': len(migration_results)
             }
         }
+        
+        # Collect execution report data from each migration's JSON file
+        for migration_id, output_files in migration_results.items():
+            migration_data = {
+                'output_files': output_files,
+                'total_execution_time': 0,
+                'total_migration_size_bytes': 0,
+                'total_migration_size_gb': 0
+            }
+            
+            # Look for execution report JSON file
+            json_file_found = False
+            
+            # Try to find the JSON file in the output directories
+            for file_type, file_path in output_files.items():
+                if file_type == 'config':  # Config files are in the migration_exec_results directory
+                    json_dir = os.path.dirname(file_path)
+                    
+                    # Look for JSON files in this directory
+                    if os.path.exists(json_dir):
+                        for file in os.listdir(json_dir):
+                            if file.endswith('_execution_report.json'):
+                                json_path = os.path.join(json_dir, file)
+                                
+                                try:
+                                    with open(json_path, 'r', encoding='utf-8') as f:
+                                        json_data = json.load(f)
+                                    
+                                    # Extract relevant data
+                                    migration_data['total_execution_time'] = json_data.get('total_execution_time', 0)
+                                    migration_data['total_migration_size_bytes'] = json_data.get('total_migration_size_bytes', 0)
+                                    migration_data['total_migration_size_gb'] = json_data.get('total_migration_size_gb', 0)
+                                    
+                                    # Store the simulation config for reference
+                                    migration_data['simulation_config'] = json_data.get('simulation_config', {})
+                                    migration_data['worker_summary'] = json_data.get('worker_summary', {})
+                                    
+                                    json_file_found = True
+                                    logger.info(f"Loaded execution data from {json_path}")
+                                    break
+                                    
+                                except Exception as e:
+                                    logger.warning(f"Failed to read execution report JSON {json_path}: {e}")
+                    
+                    if json_file_found:
+                        break
+            
+            if not json_file_found:
+                logger.warning(f"No execution report JSON found for migration {migration_id}")
+            
+            execution_data['migrations'][migration_id] = migration_data
+        
         return execution_data
     
     def generate_execution_report(self, execution_data: dict, output_path: str):
@@ -536,11 +633,28 @@ class SimpleMigrationRunner:
             f.write("Migration Details:\n")
             f.write("-" * 30 + "\n")
             
-            for migration_id, output_files in execution_data['migrations'].items():
+            for migration_id, migration_data in execution_data['migrations'].items():
                 f.write(f"\nMigration ID: {migration_id}\n")
                 f.write(f"Status: SUCCESS\n")
-                f.write("Output Files:\n")
+                f.write(f"Total Execution Time: {migration_data.get('total_execution_time', 0):.2f} time units\n")
+                f.write(f"Total Migration Size: {migration_data.get('total_migration_size_bytes', 0):,} bytes ({migration_data.get('total_migration_size_gb', 0):.2f} GB)\n")
                 
+                # Simulation configuration if available
+                simulation_config = migration_data.get('simulation_config', {})
+                if simulation_config:
+                    f.write(f"Max Concurrent Workers: {simulation_config.get('max_concurrent_workers', 'N/A')}\n")
+                    f.write(f"Threads Per Worker: {simulation_config.get('threads_per_worker', 'N/A')}\n")
+                    f.write(f"Total CPUs: {simulation_config.get('total_cpus', 'N/A')}\n")
+                
+                # Worker summary if available
+                worker_summary = migration_data.get('worker_summary', {})
+                if worker_summary:
+                    f.write(f"Total Workers: {worker_summary.get('total_workers', 0)}\n")
+                    f.write(f"Total SSTables: {worker_summary.get('total_sstables', 0)}\n")
+                    f.write(f"Total CPU Time: {worker_summary.get('total_cpu_time', 0):.2f} time units\n")
+                
+                f.write("Output Files:\n")
+                output_files = migration_data.get('output_files', {})
                 for file_type, file_path in output_files.items():
                     f.write(f"  {file_type}: {file_path}\n")
         
@@ -551,15 +665,31 @@ class SimpleMigrationRunner:
         logger.info(f"Generating CSV execution report: {output_path}")
         
         with open(output_path, 'w', newline='') as csvfile:
-            fieldnames = ['migration_id', 'status', 'html_output', 'config_output', 'plotly_timeline', 'plotly_details', 'plotly_distribution']
+            fieldnames = ['migration_id', 'status', 'total_execution_time', 'total_migration_size_bytes', 'total_migration_size_gb', 
+                         'max_concurrent_workers', 'threads_per_worker', 'total_cpus',
+                         'total_workers', 'total_sstables', 'total_cpu_time', 
+                         'html_output', 'config_output', 'plotly_timeline', 'plotly_details', 'plotly_distribution']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             
             writer.writeheader()
             
-            for migration_id, output_files in execution_data['migrations'].items():
+            for migration_id, migration_data in execution_data['migrations'].items():
+                output_files = migration_data.get('output_files', {})
+                worker_summary = migration_data.get('worker_summary', {})
+                simulation_config = migration_data.get('simulation_config', {})
+                
                 row = {
                     'migration_id': migration_id,
                     'status': 'SUCCESS',
+                    'total_execution_time': f"{migration_data.get('total_execution_time', 0):.2f}",
+                    'total_migration_size_bytes': migration_data.get('total_migration_size_bytes', 0),
+                    'total_migration_size_gb': f"{migration_data.get('total_migration_size_gb', 0):.2f}",
+                    'max_concurrent_workers': simulation_config.get('max_concurrent_workers', 'N/A'),
+                    'threads_per_worker': simulation_config.get('threads_per_worker', 'N/A'),
+                    'total_cpus': simulation_config.get('total_cpus', 'N/A'),
+                    'total_workers': worker_summary.get('total_workers', 0),
+                    'total_sstables': worker_summary.get('total_sstables', 0),
+                    'total_cpu_time': f"{worker_summary.get('total_cpu_time', 0):.2f}",
                     'html_output': output_files.get('html', ''),
                     'config_output': output_files.get('config', ''),
                     'plotly_timeline': output_files.get('plotly_timeline', ''),
@@ -679,6 +809,7 @@ s3:
 simulation:
   worker_config:
     max_concurrent_workers: 90
+    threads_per_worker: 1
   visualization:
     no_plotly: false
     plotly_comprehensive: true
@@ -712,11 +843,11 @@ simulation:
     print("  MIGRATION_ID (automatically set to current migration ID)")
     print()
     print("Simulation options configured:")
-    print("  Worker Configuration: max_concurrent_workers")
+    print("  Worker Configuration: max_concurrent_workers, threads_per_worker")
     print("  Visualization Options: plotly generation and comprehensive mode")
     print("  Output Options: naming and directory structure")
     print()
-    print("Simple simulation runs with single-threaded workers up to max_concurrent_workers concurrency.")
+    print("Simple simulation runs with configurable threading (threads_per_worker) up to max_concurrent_workers concurrency.")
 
 def find_config_file(config_path: str = None) -> str:
     """Find the configuration file in the current directory or helper_scripts directory.
@@ -776,6 +907,7 @@ def main():
         
         # Initialize and run the migration processor
         runner = SimpleMigrationRunner(config_path, args.bucket)
+        
         runner.run(args.start_id, args.end_id, args.prefix, args.execution_name, args.output_dir)
     except Exception as e:
         logger.error(f"Error: {e}")

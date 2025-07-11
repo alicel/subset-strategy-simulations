@@ -25,6 +25,7 @@ def save_configuration(args, config, config_file, total_time, num_files):
         f.write("Worker Configuration:\n")
         f.write("-" * 21 + "\n")
         f.write(f"Max concurrent workers: {config.max_concurrent_workers}\n")
+        f.write(f"Threads per worker: {config.threads_per_worker}\n")
         
         # Check for migration-level configuration from environment variables
         worker_processing_time_unit = os.environ.get('MIGRATION_WORKER_PROCESSING_TIME_UNIT')
@@ -68,8 +69,10 @@ def save_configuration(args, config, config_file, total_time, num_files):
         cmd_parts = [f"python run_simple_simulation.py {args.directory}"]
         
         # Add non-default arguments
-        if args.max_concurrent_workers != 4:
+        if args.max_concurrent_workers != 90:
             cmd_parts.append(f"--max-concurrent-workers {args.max_concurrent_workers}")
+        if args.threads_per_worker != 1:
+            cmd_parts.append(f"--threads-per-worker {args.threads_per_worker}")
         if args.output_name != 'simple_simulation_results':
             cmd_parts.append(f"--output-name {args.output_name}")
         if args.output_dir != 'output_files':
@@ -123,6 +126,7 @@ def save_results_to_file(simulation: SimpleSimulation, output_file: str):
         f.write("<h2>Configuration</h2>\n")
         f.write('<div class="config">\n')
         f.write(f"<p><strong>Max concurrent workers:</strong> {simulation.config.max_concurrent_workers}</p>\n")
+        f.write(f"<p><strong>Threads per worker:</strong> {simulation.config.threads_per_worker}</p>\n")
         f.write(f"<p><strong>Total simulation time:</strong> {simulation.current_time:.2f} time units</p>\n")
         f.write(f"<p><strong>Workers processed:</strong> {len(simulation.completed_workers)}</p>\n")
         f.write("</div>\n")
@@ -180,8 +184,10 @@ def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Run simple simulation on subset files')
     parser.add_argument('directory', help='Directory containing subset files to process')
-    parser.add_argument('--max-concurrent-workers', type=int, default=4, 
-                       help='Maximum number of concurrent workers (default: 4)')
+    parser.add_argument('--max-concurrent-workers', type=int, default=90, 
+                       help='Maximum number of concurrent workers (default: 90)')
+    parser.add_argument('--threads-per-worker', type=int, default=1,
+                       help='Number of threads per worker (default: 1)')
     parser.add_argument('--output-name', type=str, default='simple_simulation_results', 
                        help='Base name for output files (default: simple_simulation_results)')
     parser.add_argument('--output-dir', type=str, default='output_files', 
@@ -200,8 +206,12 @@ def main():
         print("Error: max-concurrent-workers must be positive", file=sys.stderr)
         sys.exit(1)
     
+    if args.threads_per_worker <= 0:
+        print("Error: threads-per-worker must be positive", file=sys.stderr)
+        sys.exit(1)
+    
     # Configure the simulation
-    config = SimpleConfig(max_concurrent_workers=args.max_concurrent_workers)
+    config = SimpleConfig(max_concurrent_workers=args.max_concurrent_workers, threads_per_worker=args.threads_per_worker)
     
     # Parse input files from directory
     try:
@@ -219,6 +229,7 @@ def main():
     print("=" * 50)
     print(f"Input directory: {args.directory}")
     print(f"Max concurrent workers: {config.max_concurrent_workers}")
+    print(f"Threads per worker: {config.threads_per_worker}")
     print(f"Files to process: {len(files)}")
     
     # Create and run simulation
@@ -253,6 +264,10 @@ def main():
     # Export CSV data for comparison analysis
     csv_base = os.path.join(config_dir, output_base)
     simulation.export_data_to_csv(csv_base)
+    
+    # Export execution report data as JSON for helper script consumption
+    execution_report_path = os.path.join(config_dir, f"{output_base}_execution_report.json")
+    simulation.export_execution_report_data(execution_report_path)
     
     # Generate Plotly visualizations if requested
     if not args.no_plotly:

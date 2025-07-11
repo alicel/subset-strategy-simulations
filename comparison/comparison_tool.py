@@ -25,13 +25,17 @@ class MigrationMetrics:
     total_execution_time: float
     total_workers: int
     total_cpus: int  # threads across all workers
-    cpu_time: float  # total thread time used
+    cpu_time: float  # total thread time used (current calculation)
     total_data_size_gb: float  # total data size processed in GB
     workers_by_tier: Dict[str, int]  # tier -> worker count
     cpus_by_tier: Dict[str, int]  # tier -> total threads
     stragglers_by_tier: Dict[str, int]  # tier -> straggler worker count
-    # Configuration data
     config: Dict[str, any]  # simulation and migration configuration
+    # CPU Efficiency metrics (available for both simple and tiered strategies)
+    total_used_cpu_time: float = 0.0  # total allocated CPU time (duration × threads)
+    total_active_cpu_time: float = 0.0  # total actual processing time
+    cpu_inefficiency: float = 0.0  # idle/wasted CPU time
+    average_cpu_efficiency_percent: float = 0.0  # average efficiency across workers
     
     def __post_init__(self):
         """Calculate derived metrics."""
@@ -39,7 +43,7 @@ class MigrationMetrics:
             # For simple strategy, all workers are in 'UNIVERSAL' tier
             self.workers_by_tier = {'UNIVERSAL': self.total_workers}
             self.cpus_by_tier = {'UNIVERSAL': self.total_cpus}
-            self.stragglers_by_tier = {'UNIVERSAL': 0}  # Simple has no stragglers (1 thread per worker)
+            self.stragglers_by_tier = {'UNIVERSAL': 0}  # Simple has no stragglers
 
 @dataclass
 class ComparisonResult:
@@ -104,6 +108,31 @@ class ComparisonResult:
             return float('inf') if self.simple_metrics.cpu_time > 0 else 1.0
         return self.simple_metrics.cpu_time / self.tiered_metrics.cpu_time
 
+    # CPU Efficiency properties (now available for both strategies)
+    @property
+    def simple_cpu_efficiency_percent(self) -> float:
+        """CPU efficiency percentage for simple strategy."""
+        return self.simple_metrics.average_cpu_efficiency_percent
+    
+    @property
+    def tiered_cpu_efficiency_percent(self) -> float:
+        """CPU efficiency percentage for tiered strategy."""
+        return self.tiered_metrics.average_cpu_efficiency_percent
+    
+    @property
+    def simple_cpu_inefficiency_ratio(self) -> float:
+        """Ratio of wasted CPU time to total CPU time for simple strategy."""
+        if self.simple_metrics.total_used_cpu_time == 0:
+            return 0.0
+        return self.simple_metrics.cpu_inefficiency / self.simple_metrics.total_used_cpu_time
+    
+    @property
+    def tiered_cpu_inefficiency_ratio(self) -> float:
+        """Ratio of wasted CPU time to total CPU time for tiered strategy."""
+        if self.tiered_metrics.total_used_cpu_time == 0:
+            return 0.0
+        return self.tiered_metrics.cpu_inefficiency / self.tiered_metrics.total_used_cpu_time
+
     # Difference properties (tiered - simple)
     @property
     def execution_time_diff(self) -> float:
@@ -130,6 +159,11 @@ class ComparisonResult:
         """Difference in data size (tiered - simple)."""
         return self.tiered_metrics.total_data_size_gb - self.simple_metrics.total_data_size_gb
     
+    @property
+    def cpu_efficiency_diff(self) -> float:
+        """Difference in CPU efficiency percentage (tiered - simple)."""
+        return self.tiered_metrics.average_cpu_efficiency_percent - self.simple_metrics.average_cpu_efficiency_percent
+    
     def get_config_comparison(self, config_keys: List[str]) -> Dict[str, any]:
         """Compare specific configuration parameters between strategies."""
         comparison = {}
@@ -155,7 +189,21 @@ class ComparisonResult:
             'large_tier_worker_num_threads': 'large_threads'  # This is always 1
         }
         
-        # First try direct lookup in simulation config
+        # Migration parameters that should be looked up directly in migration config
+        migration_params = {
+            'small_tier_max_sstable_size_gb',
+            'small_tier_thread_subset_max_size_floor_gb',
+            'medium_tier_max_sstable_size_gb',
+            'optimize_packing_medium_subsets',
+            'max_num_sstables_per_subset'
+        }
+        
+        # First check if it's a migration parameter
+        if key in migration_params:
+            if 'migration' in config and key in config['migration']:
+                return config['migration'][key]
+        
+        # Then try direct lookup in simulation config
         if 'simulation' in config and key in config['simulation']:
             return config['simulation'][key]
         
@@ -165,7 +213,7 @@ class ComparisonResult:
             if mapped_key in config['simulation']:
                 return config['simulation'][mapped_key]
         
-        # Then try migration config
+        # Also try migration config for other parameters
         if 'migration' in config and key in config['migration']:
             return config['migration'][key]
         
@@ -207,50 +255,38 @@ class SimulationDataExtractor:
             workers_csv = None
             summary_csv = None
             
-            for csv_file in csv_dir.glob("*_workers.csv"):
-                workers_csv = csv_file
-                break
+            # Sort glob results to ensure deterministic file selection
+            workers_csv_files = sorted(csv_dir.glob("*_workers.csv"))
+            summary_csv_files = sorted(csv_dir.glob("*_summary.csv"))
             
-            for csv_file in csv_dir.glob("*_summary.csv"):
-                summary_csv = csv_file
-                break
+            workers_csv = workers_csv_files[0] if workers_csv_files else None
+            summary_csv = summary_csv_files[0] if summary_csv_files else None
             
             if not workers_csv or not summary_csv:
                 print(f"Warning: Could not find CSV files for {migration_id}. Looking for workers and summary CSV files.")
                 return None
             
-            # Parse worker CSV for actual execution data
+            # Parse worker CSV for actual execution data and CPU efficiency metrics
             actual_workers = 0
             total_cpu_time = 0.0
             total_data_size_gb = 0.0
+            total_used_cpu_time = 0.0
+            total_active_cpu_time = 0.0
+            cpu_inefficiency = 0.0
+            cpu_efficiency_values = []
+            threads_per_worker = 1  # Default value, will be updated from config
             
-            with open(workers_csv, 'r', encoding='utf-8') as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    actual_workers += 1
-                    # Calculate CPU time as duration × threads (1 thread per worker for simple)
-                    duration = float(row['Duration'])
-                    total_cpu_time += duration * 1  # 1 thread per worker
-                    # Sum up data size
-                    total_data_size_gb += float(row['Data_Size_GB'])
-            
-            # Parse summary CSV for total execution time and other metrics
-            total_execution_time = 0.0
-            total_cpus = actual_workers  # 1 CPU per worker for simple strategy
-            
-            with open(summary_csv, 'r', encoding='utf-8') as f:
-                reader = csv.reader(f)
-                for row in reader:
-                    if len(row) >= 2 and row[0] == 'Total_Simulation_Time':
-                        total_execution_time = float(row[1])
-                    elif len(row) >= 2 and row[0] == 'Total_CPU_Time':
-                        total_cpu_time = float(row[1])
-            
-            # Extract basic configuration from config file
+            # Extract basic configuration from config file first to get threads_per_worker
             config = {'simulation': {}, 'migration': {}}
             try:
                 with open(config_file, 'r', encoding='utf-8') as f:
                     content = f.read()
+                    # Extract threads_per_worker first
+                    match = re.search(r'Threads per worker:\s*(\d+)', content)
+                    if match:
+                        threads_per_worker = int(match.group(1))
+                        config['simulation']['threads_per_worker'] = threads_per_worker
+                    
                     # Extract max_concurrent_workers from config file
                     match = re.search(r'Max concurrent workers:\s*(\d+)', content)
                     if match:
@@ -273,6 +309,54 @@ class SimulationDataExtractor:
             except Exception as e:
                 print(f"Warning: Could not extract config from {config_file}: {e}")
             
+            with open(workers_csv, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    actual_workers += 1
+                    # Calculate CPU time as duration × threads_per_worker
+                    duration = float(row['Duration'])
+                    total_cpu_time += duration * threads_per_worker
+                    # Sum up data size (with safety check)
+                    if 'Data_Size_GB' in row and row['Data_Size_GB']:
+                        total_data_size_gb += float(row['Data_Size_GB'])
+                    
+                    # Extract CPU efficiency metrics if available (new CSV format with multithreaded support)
+                    if 'Total_Used_CPU_Time' in row and 'Total_Active_CPU_Time' in row:
+                        total_used_cpu_time += float(row['Total_Used_CPU_Time'])
+                        total_active_cpu_time += float(row['Total_Active_CPU_Time'])
+                        cpu_inefficiency += float(row['CPU_Inefficiency'])
+                        cpu_efficiency_values.append(float(row['CPU_Efficiency_Percent']))
+            
+            # Parse summary CSV for total execution time and other metrics
+            total_execution_time = 0.0
+            total_cpus = actual_workers * threads_per_worker  # threads_per_worker CPUs per worker
+            
+            with open(summary_csv, 'r', encoding='utf-8') as f:
+                reader = csv.reader(f)
+                for row in reader:
+                    if len(row) >= 2 and row[0] == 'Total_Simulation_Time':
+                        total_execution_time = float(row[1])
+                    elif len(row) >= 2 and row[0] == 'Total_CPU_Time':
+                        total_cpu_time = float(row[1])  # Use the corrected value from summary
+                    elif len(row) >= 2 and row[0] == 'Total_CPUs':
+                        total_cpus = int(row[1])  # Use the corrected value from summary
+            
+            # Calculate overall CPU efficiency (more meaningful than simple average)
+            average_cpu_efficiency_percent = (total_active_cpu_time / total_used_cpu_time * 100) if total_used_cpu_time > 0 else 0.0
+            
+            # If we couldn't get data size from CSV, try to get it from JSON as fallback
+            if total_data_size_gb == 0.0:
+                print(f"Warning: No data size found in CSV for {migration_id}. Looking for JSON fallback.")
+                json_files = list(csv_dir.glob("*_execution_report.json"))
+                if json_files:
+                    try:
+                        with open(json_files[0], 'r', encoding='utf-8') as f:
+                            json_data = json.load(f)
+                        total_data_size_gb = json_data.get('total_migration_size_gb', 0.0)
+                        print(f"Found migration size in JSON: {total_data_size_gb:.2f} GB")
+                    except Exception as e:
+                        print(f"Warning: Could not read JSON fallback for {migration_id}: {e}")
+            
             return MigrationMetrics(
                 migration_id=migration_id,
                 strategy='simple',
@@ -284,6 +368,10 @@ class SimulationDataExtractor:
                 workers_by_tier={},
                 cpus_by_tier={},
                 stragglers_by_tier={},
+                total_used_cpu_time=total_used_cpu_time,
+                total_active_cpu_time=total_active_cpu_time,
+                cpu_inefficiency=cpu_inefficiency,
+                average_cpu_efficiency_percent=average_cpu_efficiency_percent,
                 config=config
             )
             
@@ -325,12 +413,46 @@ class SimulationDataExtractor:
         # Look for execution report files that might contain configuration
         exec_reports_dir = tiered_path / 'exec_reports'
         if exec_reports_dir.exists():
+            # Look for execution report text files that contain migration configuration
+            for report_file in exec_reports_dir.glob('execution_report_*.txt'):
+                try:
+                    with open(report_file, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                        
+                    # Parse configuration from the report
+                    config_section = False
+                    for line in content.split('\n'):
+                        line = line.strip()
+                        if line.startswith('MIGRATION CONFIGURATION'):
+                            config_section = True
+                            continue
+                        elif line.startswith('SIMULATION CONFIGURATION') or line.startswith('PER-MIGRATION'):
+                            config_section = False
+                            continue
+                        
+                        if config_section and ':' in line and not line.startswith('-'):
+                            key, value = line.split(':', 1)
+                            key = key.strip()
+                            value = value.strip()
+                            
+                            # Convert values to appropriate types
+                            if value.lower() in ['true', 'false']:
+                                execution_config[key] = value.lower() == 'true'
+                            elif value.replace('.', '').replace('-', '').isdigit():
+                                execution_config[key] = float(value) if '.' in value else int(value)
+                            else:
+                                execution_config[key] = value
+                    break  # Use first report file found
+                except Exception as e:
+                    print(f"Warning: Could not parse execution report {report_file}: {e}")
+            
+            # Also look for JSON execution reports as fallback
             for json_file in exec_reports_dir.glob('*_execution_report.json'):
                 try:
                     with open(json_file, 'r', encoding='utf-8') as f:
                         data = json.load(f)
                         if 'simulation_config' in data:
-                            execution_config = data['simulation_config']
+                            execution_config.update(data['simulation_config'])
                             break
                 except Exception:
                     continue
@@ -359,9 +481,9 @@ class SimulationDataExtractor:
             csv_dir = json_file.parent
             workers_csv = None
             
-            for csv_file in csv_dir.glob("*_workers.csv"):
-                workers_csv = csv_file
-                break
+            # Sort glob results to ensure deterministic file selection
+            workers_csv_files = sorted(csv_dir.glob("*_workers.csv"))
+            workers_csv = workers_csv_files[0] if workers_csv_files else None
             
             # Calculate totals across all tiers from JSON
             total_workers = 0
@@ -391,9 +513,14 @@ class SimulationDataExtractor:
                     cpus_by_tier[tier] = 0
                     stragglers_by_tier[tier] = 0
             
-            # Calculate actual CPU time and total data size from worker CSV if available
+            # Calculate actual CPU time, efficiency metrics, and total data size from worker CSV if available
             cpu_time = 0.0
             total_data_size_gb = 0.0
+            total_used_cpu_time = 0.0
+            total_active_cpu_time = 0.0
+            cpu_inefficiency = 0.0
+            cpu_efficiency_values = []
+            
             if workers_csv and workers_csv.exists():
                 with open(workers_csv, 'r', encoding='utf-8') as f:
                     reader = csv.DictReader(f)
@@ -402,12 +529,32 @@ class SimulationDataExtractor:
                         duration = float(row['Duration'])
                         threads_per_worker = simulation_config.get(f'{tier.lower()}_threads', 1)
                         cpu_time += duration * threads_per_worker
-                        # Sum up data size
-                        total_data_size_gb += float(row['Data_Size_GB'])
+                        # Sum up data size (with safety check)
+                        if 'Data_Size_GB' in row and row['Data_Size_GB']:
+                            total_data_size_gb += float(row['Data_Size_GB'])
+                        
+                        # Extract efficiency metrics if available (new CSV format)
+                        if 'Total_Used_CPU_Time' in row and 'Total_Active_CPU_Time' in row:
+                            total_used_cpu_time += float(row['Total_Used_CPU_Time'])
+                            total_active_cpu_time += float(row['Total_Active_CPU_Time'])
+                            cpu_inefficiency += float(row['CPU_Inefficiency'])
+                            cpu_efficiency_values.append(float(row['CPU_Efficiency_Percent']))
             else:
                 # Fallback to conservative estimate if CSV not available
                 cpu_time = total_execution_time * total_cpus if total_cpus > 0 else total_execution_time
                 print(f"Warning: Worker CSV not found for {migration_id}, using conservative CPU time estimate")
+            
+            # If we couldn't get data size from CSV, use JSON data as fallback
+            if total_data_size_gb == 0.0:
+                print(f"Warning: No data size found in CSV for {migration_id}. Using JSON data as fallback.")
+                total_data_size_gb = data.get('total_migration_size_gb', 0.0)
+                if total_data_size_gb > 0:
+                    print(f"Found migration size in JSON: {total_data_size_gb:.2f} GB")
+                else:
+                    print(f"Warning: No migration size found in JSON for {migration_id}")
+            
+            # Calculate overall weighted efficiency (more meaningful than simple average)
+            average_cpu_efficiency_percent = (total_active_cpu_time / total_used_cpu_time * 100) if total_used_cpu_time > 0 else 0.0
             
             # Build configuration dict
             config = {
@@ -426,6 +573,10 @@ class SimulationDataExtractor:
                 workers_by_tier=workers_by_tier,
                 cpus_by_tier=cpus_by_tier,
                 stragglers_by_tier=stragglers_by_tier,
+                total_used_cpu_time=total_used_cpu_time,
+                total_active_cpu_time=total_active_cpu_time,
+                cpu_inefficiency=cpu_inefficiency,
+                average_cpu_efficiency_percent=average_cpu_efficiency_percent,
                 config=config
             )
             
@@ -505,9 +656,9 @@ class ComparisonAnalyzer:
                 print(f"  Tiered Only ({len(tiered_only)}): {sorted(tiered_only)}")
         
         # Header
-        print(f"\n{'Migration':<12} {'Execution Time':<35} {'Workers':<30} {'CPUs':<30} {'CPU Time':<35}")
-        print(f"{'ID':<12} {'Simple':<10} {'Tiered':<10} {'T/S':<5} {'S/T':<5} {'Simple':<8} {'Tiered':<8} {'T/S':<5} {'S/T':<5} {'Simple':<8} {'Tiered':<8} {'T/S':<5} {'S/T':<5} {'Simple':<10} {'Tiered':<10} {'T/S':<5} {'S/T':<5}")
-        print("-" * 125)
+        print(f"\n{'Migration':<12} {'Data Size (GB)':<25} {'Execution Time':<35} {'Workers':<30} {'CPUs':<30} {'CPU Time':<35} {'CPU Efficiency':<33}")
+        print(f"{'ID':<12} {'Simple':<8} {'Tiered':<8} {'Diff':<8} {'Simple':<10} {'Tiered':<10} {'T/S':<5} {'S/T':<5} {'Simple':<8} {'Tiered':<8} {'T/S':<5} {'S/T':<5} {'Simple':<8} {'Tiered':<8} {'T/S':<5} {'S/T':<5} {'Simple':<10} {'Tiered':<10} {'T/S':<5} {'S/T':<5} {'S-Eff%':<8} {'S-Waste%':<8} {'T-Eff%':<8} {'T-Waste%':<8}")
+        print("-" * 175)
         
         # Data rows
         for comp in comparisons:
@@ -531,10 +682,21 @@ class ComparisonAnalyzer:
             cpu_ratio_ts = f"{comp.cpu_count_ratio:.2f}"
             cpu_ratio_st = f"{comp.cpu_count_ratio_inverse:.2f}"
             
-            print(f"{comp.migration_id:<12} {simple_time:<10} {tiered_time:<10} {time_ratio_ts:<5} {time_ratio_st:<5} "
+            # CPU efficiency metrics for both strategies
+            simple_eff_percent = f"{comp.simple_cpu_efficiency_percent:.1f}%" if comp.simple_cpu_efficiency_percent > 0 else "N/A"
+            simple_waste_percent = f"{comp.simple_cpu_inefficiency_ratio * 100:.1f}%" if comp.simple_metrics.total_used_cpu_time > 0 else "N/A"
+            tiered_eff_percent = f"{comp.tiered_cpu_efficiency_percent:.1f}%" if comp.tiered_cpu_efficiency_percent > 0 else "N/A"
+            tiered_waste_percent = f"{comp.tiered_cpu_inefficiency_ratio * 100:.1f}%" if comp.tiered_metrics.total_used_cpu_time > 0 else "N/A"
+            
+            # Data size difference for validation
+            data_size_diff = tiered.total_data_size_gb - simple.total_data_size_gb
+            data_size_diff_str = f"{data_size_diff:+.2f}"
+            
+            print(f"{comp.migration_id:<12} {simple.total_data_size_gb:<8.2f} {tiered.total_data_size_gb:<8.2f} {data_size_diff_str:<8} {simple_time:<10} {tiered_time:<10} {time_ratio_ts:<5} {time_ratio_st:<5} "
                   f"{simple.total_workers:<8} {tiered.total_workers:<8} {worker_ratio_ts:<5} {worker_ratio_st:<5} "
                   f"{simple.total_cpus:<8} {tiered.total_cpus:<8} {cpu_ratio_ts:<5} {cpu_ratio_st:<5} "
-                  f"{simple_cpu_time:<10} {tiered_cpu_time:<10} {cpu_time_ratio_ts:<5} {cpu_time_ratio_st:<5}")
+                  f"{simple_cpu_time:<10} {tiered_cpu_time:<10} {cpu_time_ratio_ts:<5} {cpu_time_ratio_st:<5} "
+                  f"{simple_eff_percent:<8} {simple_waste_percent:<8} {tiered_eff_percent:<8} {tiered_waste_percent:<8}")
         
         # Summary statistics
         print("\n" + "="*125)
@@ -600,7 +762,7 @@ class ComparisonAnalyzer:
         else:
             return f"{time_units:.1f}"
     
-    def save_comparison_csv(self, comparisons: List[ComparisonResult], output_file: str, simple_exec_name: str = None, tiered_exec_name: str = None, data_size_threshold: float = None):
+    def save_comparison_csv(self, comparisons: List[ComparisonResult], output_file: str, simple_exec_name: str = None, tiered_exec_name: str = None, data_size_threshold: float = None, efficiency_threshold: float = None):
         """Save comparison results to CSV file."""
         with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
             # Write header comments
@@ -612,6 +774,8 @@ class ComparisonAnalyzer:
             csvfile.write("# Diff columns show Tiered - Simple (positive = Tiered higher, negative = Tiered lower)\n")
             if data_size_threshold is not None:
                 csvfile.write(f"# Large Migration Threshold: {data_size_threshold:.2f} GB\n")
+            if efficiency_threshold is not None:
+                csvfile.write(f"# Low Efficiency Threshold: {efficiency_threshold:.1f}%\n")
             csvfile.write("#\n")
             
             # Write configuration comparison
@@ -623,6 +787,7 @@ class ComparisonAnalyzer:
                 
                 simple_config_keys = [
                     'max_concurrent_workers',
+                    'threads_per_worker',
                     'worker_processing_time_unit',
                     'enable_subset_size_cap',
                     'enable_subset_num_sstable_cap'
@@ -660,11 +825,13 @@ class ComparisonAnalyzer:
             # CSV header
             fieldnames = [
                 'Migration_ID',
-                'Data_Size_GB',
+                'Simple_Data_Size_GB', 'Tiered_Data_Size_GB', 'Data_Size_Diff',
                 'Simple_Execution_Time', 'Tiered_Execution_Time', 'Execution_Time_Diff',
                 'Simple_Workers', 'Tiered_Workers', 'Worker_Diff',
                 'Simple_CPUs', 'Tiered_CPUs', 'CPU_Diff',
                 'Simple_CPU_Time', 'Tiered_CPU_Time', 'CPU_Time_Diff',
+                'Simple_Active_CPU_Time', 'Simple_CPU_Efficiency_Percent', 'Simple_CPU_Waste_Percent',
+                'Tiered_Active_CPU_Time', 'Tiered_CPU_Efficiency_Percent', 'Tiered_CPU_Waste_Percent',
                 'Tiered_Small_Workers', 'Tiered_Medium_Workers', 'Tiered_Large_Workers',
                 'Tiered_Small_Stragglers', 'Tiered_Medium_Stragglers', 'Tiered_Large_Stragglers',
                 'Tiered_Small_CPUs', 'Tiered_Medium_CPUs', 'Tiered_Large_CPUs'
@@ -684,7 +851,9 @@ class ComparisonAnalyzer:
                 
                 row = {
                     'Migration_ID': comp.migration_id,
-                    'Data_Size_GB': f"{simple.total_data_size_gb:.2f}",
+                    'Simple_Data_Size_GB': f"{simple.total_data_size_gb:.2f}",
+                    'Tiered_Data_Size_GB': f"{tiered.total_data_size_gb:.2f}",
+                    'Data_Size_Diff': f"{tiered.total_data_size_gb - simple.total_data_size_gb:+.2f}",
                     'Simple_Execution_Time': f"{simple.total_execution_time:.2f}",
                     'Tiered_Execution_Time': f"{tiered.total_execution_time:.2f}",
                     'Execution_Time_Diff': f"{comp.execution_time_diff:.2f}",
@@ -697,6 +866,12 @@ class ComparisonAnalyzer:
                     'Simple_CPU_Time': f"{simple.cpu_time:.2f}",
                     'Tiered_CPU_Time': f"{tiered.cpu_time:.2f}",
                     'CPU_Time_Diff': f"{comp.cpu_time_diff:.2f}",
+                    'Simple_Active_CPU_Time': f"{simple.total_active_cpu_time:.2f}",
+                    'Simple_CPU_Efficiency_Percent': f"{simple.average_cpu_efficiency_percent:.2f}",
+                    'Simple_CPU_Waste_Percent': f"{(simple.cpu_inefficiency / simple.total_used_cpu_time * 100) if simple.total_used_cpu_time > 0 else 0:.2f}",
+                    'Tiered_Active_CPU_Time': f"{tiered.total_active_cpu_time:.2f}",
+                    'Tiered_CPU_Efficiency_Percent': f"{tiered.average_cpu_efficiency_percent:.2f}",
+                    'Tiered_CPU_Waste_Percent': f"{(tiered.cpu_inefficiency / tiered.total_used_cpu_time * 100) if tiered.total_used_cpu_time > 0 else 0:.2f}",
                     'Tiered_Small_Workers': tiered.workers_by_tier.get('SMALL', 0),
                     'Tiered_Medium_Workers': tiered.workers_by_tier.get('MEDIUM', 0),
                     'Tiered_Large_Workers': tiered.workers_by_tier.get('LARGE', 0),
@@ -762,6 +937,7 @@ class ComparisonAnalyzer:
             
             simple_config_keys = [
                 'max_concurrent_workers',
+                'threads_per_worker',
                 'worker_processing_time_unit',
                 'enable_subset_size_cap',
                 'enable_subset_num_sstable_cap'
@@ -801,9 +977,9 @@ class ComparisonAnalyzer:
         tiered_short = (tiered_exec_name[:8] + "..") if tiered_exec_name and len(tiered_exec_name) > 10 else (tiered_exec_name or "Tiered")
         
         lines.append("")
-        lines.append(f"{'Migration':<12} {'Execution Time':<30} {'Workers':<25} {'CPUs':<25} {'CPU Time':<30}")
-        lines.append(f"{'ID':<12} {simple_short:<10} {tiered_short:<10} {'Diff':<8} {simple_short:<8} {tiered_short:<8} {'Diff':<6} {simple_short:<8} {tiered_short:<8} {'Diff':<6} {simple_short:<10} {tiered_short:<10} {'Diff':<8}")
-        lines.append("-" * 115)
+        lines.append(f"{'Migration':<12} {'Data Size (GB)':<25} {'Execution Time':<30} {'Workers':<25} {'CPUs':<25} {'CPU Time':<30}")
+        lines.append(f"{'ID':<12} {'Simple':<8} {'Tiered':<8} {'Diff':<8} {simple_short:<10} {tiered_short:<10} {'Diff':<8} {simple_short:<8} {tiered_short:<8} {'Diff':<6} {simple_short:<8} {tiered_short:<8} {'Diff':<6} {simple_short:<10} {tiered_short:<10} {'Diff':<8}")
+        lines.append("-" * 125)
         
         # Data rows
         for comp in comparisons:
@@ -815,29 +991,18 @@ class ComparisonAnalyzer:
             tiered_time = self._format_time(tiered.total_execution_time)
             time_diff = f"{comp.execution_time_diff:+.1f}s" if abs(comp.execution_time_diff) < 60 else f"{comp.execution_time_diff/60:+.1f}m"
             
-            simple_cpu_time = self._format_time(simple.cpu_time)
-            tiered_cpu_time = self._format_time(tiered.cpu_time)
-            cpu_time_diff = f"{comp.cpu_time_diff:+.1f}s" if abs(comp.cpu_time_diff) < 60 else f"{comp.cpu_time_diff/60:+.1f}m"
+            # Data size formatting
+            data_size_diff = tiered.total_data_size_gb - simple.total_data_size_gb
+            data_size_diff_str = f"{data_size_diff:+.2f}"
             
-            # Format worker counts with straggler information
-            def format_worker_text(workers, stragglers):
-                if workers == 0:
-                    return "0"
-                elif stragglers > 0:
-                    return f"{workers}[{stragglers}]"
-                else:
-                    return str(workers)
-            
-            simple_workers_text = format_worker_text(simple.total_workers, sum(simple.stragglers_by_tier.values()))
-            tiered_workers_text = format_worker_text(tiered.total_workers, sum(tiered.stragglers_by_tier.values()))
-            
+            # Worker and CPU differences
             worker_diff = f"{comp.worker_count_diff:+d}"
             cpu_diff = f"{comp.cpu_count_diff:+d}"
             
-            lines.append(f"{comp.migration_id:<12} {simple_time:<10} {tiered_time:<10} {time_diff:<8} "
-                        f"{simple_workers_text:<8} {tiered_workers_text:<8} {worker_diff:<6} "
-                        f"{simple.total_cpus:<8} {tiered.total_cpus:<8} {cpu_diff:<6} "
-                        f"{simple_cpu_time:<10} {tiered_cpu_time:<10} {cpu_time_diff:<8}")
+            # CPU time difference
+            cpu_time_diff = f"{comp.cpu_time_diff:+.1f}s" if abs(comp.cpu_time_diff) < 60 else f"{comp.cpu_time_diff/60:+.1f}m"
+            
+            lines.append(f"{comp.migration_id:<12} {simple.total_data_size_gb:<8.2f} {tiered.total_data_size_gb:<8.2f} {data_size_diff_str:<8} {simple_time:<10} {tiered_time:<10} {time_diff:<8} {simple.total_workers:<8} {tiered.total_workers:<8} {worker_diff:<6} {simple.total_cpus:<8} {tiered.total_cpus:<8} {cpu_diff:<6} {self._format_time(simple.cpu_time):<10} {self._format_time(tiered.cpu_time):<10} {cpu_time_diff:<8}")
         
         # Summary statistics
         lines.append("")
@@ -906,7 +1071,7 @@ class ComparisonAnalyzer:
         
         print(f"Tabular comparison report saved to: {output_file}")
 
-    def generate_html_report(self, comparisons: List[ComparisonResult], simple_exec_name: str = None, tiered_exec_name: str = None, simple_only: Set[str] = None, tiered_only: Set[str] = None, data_size_threshold: float = None) -> str:
+    def generate_html_report(self, comparisons: List[ComparisonResult], simple_exec_name: str = None, tiered_exec_name: str = None, simple_only: Set[str] = None, tiered_only: Set[str] = None, data_size_threshold: float = None, efficiency_threshold: float = None, extended_data_size_output: bool = False) -> str:
         """Generate an HTML comparison report for browser viewing."""
         if not comparisons:
             return "<html><body><h1>No comparisons to display.</h1></body></html>"
@@ -943,12 +1108,17 @@ class ComparisonAnalyzer:
         .config-different {{ background-color: #ffe8e8 !important; }}
         .has-stragglers {{ background-color: #ffcccc !important; }} /* Light red for cells with stragglers */
         .large-migration {{ background-color: #ffe4b5 !important; border-left: 4px solid #ff8c00; }} /* Light orange with orange border for large migrations */
+        .low-efficiency {{ background-color: #ffff00 !important; font-weight: bold; }} /* Bright yellow for low efficiency migrations */
         
         table {{ border-collapse: collapse; width: 100%; margin-bottom: 20px; background-color: white; }}
         th, td {{ border: 1px solid #ddd; padding: 10px; text-align: left; }}
         th {{ background-color: #f2f2f2; font-weight: bold; }}
         tr:nth-child(even) {{ background-color: #f9f9f9; }}
         tr:hover {{ background-color: #f0f0f0; }}
+        
+        /* Thicker borders for metric group separators */
+        .group-separator-left {{ border-left: 3px solid #333 !important; }}
+        .group-separator-right {{ border-right: 3px solid #333 !important; }}
         
         .migration-details {{ margin-top: 20px; }}
         .best-time {{ background-color: #c8e6c9 !important; font-weight: bold; }}
@@ -985,6 +1155,11 @@ class ComparisonAnalyzer:
             large_migrations = sum(1 for comp in comparisons if comp.simple_metrics.total_data_size_gb >= data_size_threshold)
             html += f"""
     <p><strong>Large Migration Threshold:</strong> {data_size_threshold:.2f} GB ({large_migrations} migrations)</p>"""
+        
+        if efficiency_threshold is not None:
+            low_efficiency_migrations = sum(1 for comp in comparisons if comp.tiered_metrics.average_cpu_efficiency_percent > 0 and comp.tiered_metrics.average_cpu_efficiency_percent < efficiency_threshold)
+            html += f"""
+    <p><strong>Low Efficiency Threshold:</strong> {efficiency_threshold:.1f}% ({low_efficiency_migrations} migrations)</p>"""
         
         if simple_only or tiered_only:
             html += f"""</div>
@@ -1046,42 +1221,74 @@ class ComparisonAnalyzer:
     <table>
         <thead>
             <tr>
-                <th rowspan="2">Migration ID</th>
-                <th rowspan="2">Data Size (GB)</th>
-                <th colspan="3">Execution Time</th>
-                <th colspan="3">Workers</th>
-                <th colspan="3">CPUs</th>
-                <th colspan="3">CPU Time</th>
-                <th colspan="3">Tiered Worker Distribution</th>
+                <th rowspan="2">Migration ID</th>"""
+        
+        # Conditionally add data size header columns
+        if extended_data_size_output:
+            html += """
+                <th colspan="3" class="group-separator-left">Data Size (GB)</th>"""
+        else:
+            html += """
+                <th class="group-separator-left">Data Size (GB)</th>"""
+        
+        html += """
+                <th colspan="3" class="group-separator-left">Execution Time</th>
+                <th colspan="3" class="group-separator-left">Workers</th>
+                <th colspan="3" class="group-separator-left">CPUs</th>
+                <th colspan="3" class="group-separator-left">CPU Time</th>
+                <th colspan="3" class="group-separator-left">CPU Efficiency (Simple)</th>
+                <th colspan="3" class="group-separator-left">CPU Efficiency (Tiered)</th>
+                <th colspan="3" class="group-separator-left">Tiered Worker Distribution</th>
             </tr>
-            <tr>
-                <th>Simple</th>
+            <tr>"""
+        
+        # Conditionally add data size sub-header columns
+        if extended_data_size_output:
+            html += """
+                <th class="group-separator-left">Simple</th>
                 <th>Tiered</th>
-                <th class="diff-header">Diff</th>
-                <th>Simple</th>
+                <th class="diff-header">T-S</th>"""
+        else:
+            html += """
+                <th class="group-separator-left">Tiered</th>"""
+        
+        html += """
+                <th class="group-separator-left">Simple</th>
                 <th>Tiered</th>
-                <th class="diff-header">Diff</th>
-                <th>Simple</th>
+                <th class="diff-header">T-S</th>
+                <th class="group-separator-left">Simple</th>
                 <th>Tiered</th>
-                <th class="diff-header">Diff</th>
-                <th>Simple</th>
+                <th class="diff-header">T-S</th>
+                <th class="group-separator-left">Simple</th>
                 <th>Tiered</th>
-                <th class="diff-header">Diff</th>
-                <th>Small W</th>
+                <th class="diff-header">T-S</th>
+                <th class="group-separator-left">Simple</th>
+                <th>Tiered</th>
+                <th class="diff-header">T-S</th>
+                <th class="group-separator-left">Active Time</th>
+                <th>Eff %</th>
+                <th>Waste %</th>
+                <th class="group-separator-left">Active Time</th>
+                <th>Eff %</th>
+                <th>Waste %</th>
+                <th class="group-separator-left">Small W</th>
                 <th>Med W</th>
                 <th>Large W</th>
             </tr>
         </thead>
         <tbody>"""
         
+        # Sort comparisons by data size (descending) before processing
+        comparisons_sorted = sorted(comparisons, key=lambda comp: comp.simple_metrics.total_data_size_gb, reverse=True)
+        
         # Process each comparison and determine best values for highlighting
-        for comp in comparisons:
+        for comp in comparisons_sorted:
             simple = comp.simple_metrics
             tiered = comp.tiered_metrics
             
             # Determine best execution time and CPU time (only when genuinely different)
             best_exec_time = "simple" if simple.total_execution_time < tiered.total_execution_time else ("tiered" if tiered.total_execution_time < simple.total_execution_time else None)
-            best_cpu_time = "simple" if simple.cpu_time < tiered.cpu_time else ("tiered" if tiered.cpu_time < simple.total_execution_time else None)
+            best_cpu_time = "simple" if simple.cpu_time < tiered.cpu_time else ("tiered" if tiered.cpu_time < simple.cpu_time else None)
             
             # Format values
             simple_time_str = self._format_time(simple.total_execution_time)
@@ -1144,23 +1351,85 @@ class ComparisonAnalyzer:
             migration_id_class = "large-migration" if is_large_migration else ""
             data_size_class = "large-migration" if is_large_migration else ""
             
+            # Format CPU efficiency data for simple strategy
+            simple_active_time_str = self._format_time(simple.total_active_cpu_time) if simple.total_active_cpu_time > 0 else "N/A"
+            simple_efficiency_str = f"{simple.average_cpu_efficiency_percent:.1f}%" if simple.average_cpu_efficiency_percent > 0 else "N/A"
+            simple_waste_percent = (simple.cpu_inefficiency / simple.total_used_cpu_time * 100) if simple.total_used_cpu_time > 0 else 0
+            simple_waste_str = f"{simple_waste_percent:.1f}%" if simple_waste_percent > 0 else "N/A"
+            
+            # Format CPU efficiency data for tiered strategy
+            tiered_active_time_str = self._format_time(tiered.total_active_cpu_time) if tiered.total_active_cpu_time > 0 else "N/A"
+            tiered_efficiency_str = f"{tiered.average_cpu_efficiency_percent:.1f}%" if tiered.average_cpu_efficiency_percent > 0 else "N/A"
+            tiered_waste_percent = (tiered.cpu_inefficiency / tiered.total_used_cpu_time * 100) if tiered.total_used_cpu_time > 0 else 0
+            tiered_waste_str = f"{tiered_waste_percent:.1f}%" if tiered_waste_percent > 0 else "N/A"
+            
+            # Color code efficiency - green for high efficiency, red for low efficiency, bright yellow for threshold
+            simple_efficiency_class = ""
+            if simple.average_cpu_efficiency_percent > 0:
+                if efficiency_threshold is not None and simple.average_cpu_efficiency_percent < efficiency_threshold:
+                    simple_efficiency_class = "low-efficiency"  # Bright yellow for threshold violations
+                elif simple.average_cpu_efficiency_percent >= 80:
+                    simple_efficiency_class = "best-time"  # Green for high efficiency
+                elif simple.average_cpu_efficiency_percent < 60:
+                    simple_efficiency_class = "has-stragglers"  # Red for low efficiency
+            
+            tiered_efficiency_class = ""
+            if tiered.average_cpu_efficiency_percent > 0:
+                if efficiency_threshold is not None and tiered.average_cpu_efficiency_percent < efficiency_threshold:
+                    tiered_efficiency_class = "low-efficiency"  # Bright yellow for threshold violations
+                elif tiered.average_cpu_efficiency_percent >= 80:
+                    tiered_efficiency_class = "best-time"  # Green for high efficiency
+                elif tiered.average_cpu_efficiency_percent < 60:
+                    tiered_efficiency_class = "has-stragglers"  # Red for low efficiency
+            
+            # Calculate data size difference and highlight mismatches
+            data_size_diff = tiered.total_data_size_gb - simple.total_data_size_gb
+            data_size_diff_str = f"{data_size_diff:+.2f}"
+            data_size_diff_class = "positive-diff" if data_size_diff > 0.01 else "negative-diff" if data_size_diff < -0.01 else ""
+            
+            # Data size columns use base styling (no conditional red highlighting for mismatches)
+            simple_data_size_class = data_size_class
+            tiered_data_size_class = data_size_class
+            
+            # Calculate efficiency differences
+            efficiency_diff = tiered.average_cpu_efficiency_percent - simple.average_cpu_efficiency_percent
+            efficiency_diff_str = f"{efficiency_diff:+.1f}%" if simple.average_cpu_efficiency_percent > 0 and tiered.average_cpu_efficiency_percent > 0 else "N/A"
+            efficiency_diff_class = "positive-diff" if efficiency_diff > 0 else "negative-diff" if efficiency_diff < 0 else ""
+            
             html += f"""
             <tr>
-                <td class="{migration_id_class}"><strong>{comp.migration_id}</strong></td>
-                <td class="number {data_size_class}">{simple.total_data_size_gb:.2f}</td>
-                <td class="number {'best-time' if best_exec_time == 'simple' else ''}">{simple_time_str}</td>
+                <td class="{migration_id_class}"><strong>{comp.migration_id}</strong></td>"""
+            
+            # Conditionally add data size columns
+            if extended_data_size_output:
+                html += f"""
+                <td class="number group-separator-left {simple_data_size_class}">{simple.total_data_size_gb:.2f}</td>
+                <td class="number {tiered_data_size_class}">{tiered.total_data_size_gb:.2f}</td>
+                <td class="number {data_size_diff_class}">{data_size_diff_str}</td>"""
+            else:
+                html += f"""
+                <td class="number group-separator-left {tiered_data_size_class}">{tiered.total_data_size_gb:.2f}</td>"""
+            
+            html += f"""
+                <td class="number group-separator-left {'best-time' if best_exec_time == 'simple' else ''}">{simple_time_str}</td>
                 <td class="number {'best-time' if best_exec_time == 'tiered' else ''}">{tiered_time_str}</td>
                 <td class="number {exec_time_diff_class}">{exec_time_diff_str}</td>
-                <td class="number">{simple.total_workers:,}</td>
+                <td class="number group-separator-left">{simple.total_workers:,}</td>
                 <td class="number">{tiered.total_workers:,}</td>
                 <td class="number {worker_diff_class}">{worker_diff_str}</td>
-                <td class="number">{simple.total_cpus:,}</td>
+                <td class="number group-separator-left">{simple.total_cpus:,}</td>
                 <td class="number">{tiered.total_cpus:,}</td>
                 <td class="number {cpu_diff_class}">{cpu_diff_str}</td>
-                <td class="number {'best-time' if best_cpu_time == 'simple' else ''}">{simple_cpu_time_str}</td>
+                <td class="number group-separator-left {'best-time' if best_cpu_time == 'simple' else ''}">{simple_cpu_time_str}</td>
                 <td class="number {'best-time' if best_cpu_time == 'tiered' else ''}">{tiered_cpu_time_str}</td>
                 <td class="number {cpu_time_diff_class}">{cpu_time_diff_str}</td>
-                <td class="number {tiered_small_w_class}">{tiered_small_w}</td>
+                <td class="number group-separator-left">{simple_active_time_str}</td>
+                <td class="number {simple_efficiency_class}">{simple_efficiency_str}</td>
+                <td class="number">{simple_waste_str}</td>
+                <td class="number group-separator-left">{tiered_active_time_str}</td>
+                <td class="number {tiered_efficiency_class}">{tiered_efficiency_str}</td>
+                <td class="number">{tiered_waste_str}</td>
+                <td class="number group-separator-left {tiered_small_w_class}">{tiered_small_w}</td>
                 <td class="number {tiered_medium_w_class}">{tiered_medium_w}</td>
                 <td class="number {tiered_large_w_class}">{tiered_large_w}</td>
             </tr>"""
@@ -1177,6 +1446,9 @@ class ComparisonAnalyzer:
     <ul>
         <li><strong>W:</strong> Workers (number of workers allocated to each tier)</li>
         <li><strong>C:</strong> CPUs/Cores (total threads allocated to each tier = workers × threads per worker)</li>
+        <li><strong>Active Time:</strong> Total time spent on actual processing (both strategies)</li>
+        <li><strong>Eff %:</strong> CPU efficiency percentage (Active Time / Total Used CPU Time)</li>
+        <li><strong>Waste %:</strong> CPU waste percentage (idle thread time / Total Used CPU Time)</li>
     </ul>
     <p><strong>Straggler Information:</strong></p>
     <ul>
@@ -1184,12 +1456,44 @@ class ComparisonAnalyzer:
         <li><span style="background-color: #ffcccc; padding: 2px 6px; border-radius: 3px;">Light red background</span> indicates cells with straggler workers</li>
         <li><strong>Simple Strategy:</strong> No stragglers (1 thread per worker)</li>
     </ul>
-    <p><strong>Difference Interpretation (Tiered - Simple):</strong></p>
+    <p><strong>CPU Efficiency Color Coding:</strong></p>
+    <ul>
+        <li><span style="background-color: #c8e6c9; padding: 2px 6px; border-radius: 3px;">Green highlighting</span> indicates high CPU efficiency (≥80%)</li>
+        <li><span style="background-color: #ffcccc; padding: 2px 6px; border-radius: 3px;">Light red background</span> indicates low CPU efficiency (<60%)</li>
+        <li><strong>CPU Efficiency:</strong> Percentage of allocated CPU time that was actually used for processing</li>
+        <li><strong>CPU Waste:</strong> Percentage of allocated CPU time that was idle due to thread imbalance</li>
+    </ul>
+    <p><strong>Difference Interpretation (T-S = Tiered - Simple):</strong></p>
     <ul>
         <li><span style="background-color: #add8e6; padding: 2px 6px; border-radius: 3px;">Light blue</span> indicates positive differences (Tiered > Simple)</li>
         <li><span style="background-color: #fff8dc; padding: 2px 6px; border-radius: 3px;">Light yellow</span> indicates negative differences (Tiered < Simple)</li>
         <li><strong>Positive execution time difference:</strong> Tiered took longer</li>
         <li><strong>Negative execution time difference:</strong> Tiered was faster</li>
+        <li><strong>Positive worker/CPU difference:</strong> Tiered used more resources</li>
+        <li><strong>Negative worker/CPU difference:</strong> Tiered used fewer resources</li>
+    </ul>
+    <p><strong>Data Size Validation:</strong></p>
+    <ul>
+        <li><strong>Expected:</strong> Simple and Tiered data sizes should be identical (0.00 difference)</li>
+        <li><strong>Data size mismatches indicate:</strong> Potential data extraction issues or simulation errors</li>
+        <li><strong>Normal tolerance:</strong> ≤0.01 GB difference is considered acceptable due to rounding</li>
+    </ul>"""
+        
+        # Add information about data size column display
+        if extended_data_size_output:
+            html += """
+    <p><strong>Data Size Display (Extended Mode):</strong></p>
+    <ul>
+        <li><strong>Extended data size output enabled:</strong> Shows Simple, Tiered, and T-S difference columns</li>
+        <li><strong>Use case:</strong> For detailed validation and debugging of data size extraction issues</li>
+    </ul>"""
+        else:
+            html += """
+    <p><strong>Data Size Display (Default Mode):</strong></p>
+    <ul>
+        <li><strong>Default mode:</strong> Shows only Tiered data size column for cleaner presentation</li>
+        <li><strong>Assumption:</strong> Simple and Tiered data sizes should be identical (processing same data)</li>
+        <li><strong>To show full data size comparison:</strong> Use --extended-data-size-output flag</li>
     </ul>"""
         
         if data_size_threshold is not None:
@@ -1198,10 +1502,15 @@ class ComparisonAnalyzer:
     <ul>
         <li><span style="background-color: #ffe4b5; padding: 2px 6px; border-radius: 3px; border-left: 4px solid #ff8c00;">Light orange with orange border</span> indicates migrations with data size ≥ {data_size_threshold:.2f} GB</li>
     </ul>"""
+        
+        if efficiency_threshold is not None:
+            html += f"""
+    <p><strong>Low Efficiency Highlighting:</strong></p>
+    <ul>
+        <li><span style="background-color: #ffff00; padding: 2px 6px; border-radius: 3px; font-weight: bold;">Bright yellow</span> indicates tiered migrations with CPU efficiency < {efficiency_threshold:.1f}%</li>
+    </ul>"""
 
         html += """
-</div>
-
 </body>
 </html>"""
         
@@ -1223,6 +1532,7 @@ class ComparisonAnalyzer:
         # Define relevant configuration keys for each strategy
         simple_config_keys = [
             'max_concurrent_workers',
+            'threads_per_worker',
             'worker_processing_time_unit',
             'enable_subset_size_cap',
             'enable_subset_num_sstable_cap'
@@ -1301,9 +1611,9 @@ class ComparisonAnalyzer:
         
         return html
 
-    def save_html_report(self, comparisons: List[ComparisonResult], output_file: str, simple_exec_name: str = None, tiered_exec_name: str = None, simple_only: Set[str] = None, tiered_only: Set[str] = None, data_size_threshold: float = None):
+    def save_html_report(self, comparisons: List[ComparisonResult], output_file: str, simple_exec_name: str = None, tiered_exec_name: str = None, simple_only: Set[str] = None, tiered_only: Set[str] = None, data_size_threshold: float = None, efficiency_threshold: float = None, extended_data_size_output: bool = False):
         """Save the HTML comparison report to a file."""
-        html_content = self.generate_html_report(comparisons, simple_exec_name, tiered_exec_name, simple_only, tiered_only, data_size_threshold)
+        html_content = self.generate_html_report(comparisons, simple_exec_name, tiered_exec_name, simple_only, tiered_only, data_size_threshold, efficiency_threshold, extended_data_size_output)
         
         with open(output_file, 'w', encoding='utf-8') as f:
             f.write(html_content)
@@ -1360,6 +1670,12 @@ Examples:
   # Compare with highlighting of large migrations (≥ 10 GB)
   python comparison/comparison_tool.py --simple-execution alice_test_run --tiered-execution test_new_5 --comparison-exec-name my_analysis --data-size-threshold 10.0
   
+  # Compare with highlighting of both large migrations and low efficiency migrations
+  python comparison/comparison_tool.py --simple-execution alice_test_run --tiered-execution test_new_5 --comparison-exec-name my_analysis --data-size-threshold 10.0 --efficiency-threshold 70.0
+  
+  # Compare with extended data size output (show simple, tiered, and difference columns)
+  python comparison/comparison_tool.py --simple-execution alice_test_run --tiered-execution test_new_5 --comparison-exec-name my_analysis --extended-data-size-output
+  
   # Compare without saving reports (console output only)
   python comparison/comparison_tool.py --simple-execution alice_test_run --tiered-execution test_new_5 --comparison-exec-name my_analysis --omit-reports
   
@@ -1397,6 +1713,16 @@ Examples:
     parser.add_argument('--data-size-threshold',
                        type=float,
                        help='Highlight migrations with data size >= this threshold (in GB). Example: --data-size-threshold 10.0')
+    
+    # CPU efficiency threshold for highlighting inefficient migrations
+    parser.add_argument('--efficiency-threshold',
+                       type=float,
+                       help='Highlight tiered migrations with CPU efficiency < this threshold (in %%). Example: --efficiency-threshold 70.0')
+    
+    # Extended data size output option
+    parser.add_argument('--extended-data-size-output',
+                       action='store_true',
+                       help='Show both simple and tiered data size columns with differences (default: only show tiered data size)')
     
     args = parser.parse_args()
     
@@ -1475,9 +1801,9 @@ Examples:
             html_file = f"{output_dir}/comparison_report_{args.comparison_exec_name}.html"
             
             # Save all report formats
-            analyzer.save_comparison_csv(comparisons, csv_file, simple_exec_name, tiered_exec_name, args.data_size_threshold)
+            analyzer.save_comparison_csv(comparisons, csv_file, simple_exec_name, tiered_exec_name, args.data_size_threshold, args.efficiency_threshold)
             analyzer.save_comparison_report(comparisons, txt_file, simple_exec_name, tiered_exec_name, simple_only, tiered_only, args.data_size_threshold)
-            analyzer.save_html_report(comparisons, html_file, simple_exec_name, tiered_exec_name, simple_only, tiered_only, args.data_size_threshold)
+            analyzer.save_html_report(comparisons, html_file, simple_exec_name, tiered_exec_name, simple_only, tiered_only, args.data_size_threshold, args.efficiency_threshold, args.extended_data_size_output)
             
             print(f"Simple vs Tiered comparison analysis saved to: {output_dir}/")
         

@@ -73,7 +73,7 @@ migration:
   enable_subset_num_sstable_cap: true
   
   # Simple Simulation Specific Parameters
-  max_workers: 90
+  max_concurrent_workers: 90
   worker_processing_time_unit: 1000
 ```
 
@@ -94,7 +94,8 @@ s3:
 ```yaml
 simulation:
   worker_config:
-    max_workers: 90
+    max_concurrent_workers: 90
+    threads_per_worker: 1  # Number of threads per worker (1-N)
   visualization:
     no_plotly: false
     plotly_comprehensive: true
@@ -103,6 +104,8 @@ simulation:
     output_dir: "simulation_outputs/{migration_id}"
   custom_args: []
 ```
+
+**Note**: The `threads_per_worker` parameter is only configurable through the configuration file for the migration runner. Unlike the standalone `run_simple_simulation.py` script, the migration runner does not support `--threads-per-worker` as a command line argument to keep configuration centralized.
 
 ## Usage
 
@@ -221,7 +224,7 @@ The script sets these environment variables for the Go command:
 - `MIGRATION_SUBSET_CALCULATION_LABEL`
 - `MIGRATION_ENABLE_SUBSET_SIZE_CAP`
 - `MIGRATION_ENABLE_SUBSET_NUM_SSTABLE_CAP`
-- `MIGRATION_MAX_WORKERS`
+- `MIGRATION_MAX_CONCURRENT_WORKERS`
 - `MIGRATION_WORKER_PROCESSING_TIME_UNIT`
 
 **Automatically Set:**
@@ -234,7 +237,7 @@ Key differences from the tiered migration helper:
 1. **Simplified Environment Variables** - No tier-specific parameters
 2. **Different S3 Path** - Uses `generalCalculation` instead of `mytieredcalc`
 3. **Simple Simulation** - Calls `run_simple_simulation.py` instead of tiered version
-4. **Worker Configuration** - Only `max_workers` parameter instead of per-tier settings
+4. **Worker Configuration** - Uses `max_concurrent_workers` and `threads_per_worker` instead of per-tier settings
 5. **Visualization Options** - Focuses on plotly visualizations
 
 ## Troubleshooting

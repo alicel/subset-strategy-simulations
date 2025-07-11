@@ -335,7 +335,7 @@ def save_detailed_visualization_paginated(workers: List[Worker], output_path: st
     
     return generated_files
 
-def save_detailed_visualization(workers: List[Worker], output_path: str = "detailed_results.html", workers_per_page: int = None):
+def save_detailed_visualization(workers: List[Worker], output_path: str = "detailed_results.html", workers_per_page: int = None, per_worker: bool = False):
     """Save the detailed thread visualization to HTML file(s).
     
     Args:
@@ -343,8 +343,24 @@ def save_detailed_visualization(workers: List[Worker], output_path: str = "detai
         output_path: Path for the output HTML file
         workers_per_page: If provided, split into paginated files with this many workers per page.
                          If None or 0, create a single file with all workers.
+        per_worker: If True, generate separate files per worker (recommended for large migrations)
     """
-    if workers_per_page is None or workers_per_page <= 0:
+    if per_worker:
+        # Generate per-worker files
+        base_path = output_path.replace('.html', '')
+        per_worker_files = save_detailed_visualization_per_worker(workers, base_path, output_path)
+        
+        # Also generate a lightweight global overview
+        global_overview_fig = create_lightweight_global_overview(workers)
+        if global_overview_fig is not None:
+            global_overview_fig.write_html(output_path)
+            print(f"Lightweight global overview saved to {output_path}")
+            
+            # Add navigation to per-worker files in the global overview
+            enhance_global_overview_with_navigation(output_path, per_worker_files)
+        
+        return per_worker_files
+    elif workers_per_page is None or workers_per_page <= 0:
         # Original behavior - single file
         thread_fig = create_detailed_visualization(workers)
         if thread_fig is not None:
@@ -354,4 +370,333 @@ def save_detailed_visualization(workers: List[Worker], output_path: str = "detai
             print("No thread data available for detailed visualization")
     else:
         # New paginated behavior
-        save_detailed_visualization_paginated(workers, output_path, workers_per_page) 
+        save_detailed_visualization_paginated(workers, output_path, workers_per_page)
+
+def save_detailed_visualization_per_worker(workers: List[Worker], base_output_path: str = "detailed_results", global_overview_path: str = None):
+    """Save detailed thread visualizations as separate files per worker.
+    
+    Args:
+        workers: List of Worker objects to visualize
+        base_output_path: Base path for output files (without .html extension)
+        global_overview_path: Path to the global overview file (for back navigation)
+        
+    Returns:
+        List of generated file paths
+    """
+    if not workers:
+        print("No worker data available for per-worker detailed visualization")
+        return []
+    
+    # Sort workers consistently
+    tier_order = {'LARGE': 0, 'MEDIUM': 1, 'SMALL': 2}
+    sorted_workers = sorted(workers, key=lambda w: (tier_order[w.tier.value], w.worker_id))
+    
+    generated_files = []
+    
+    # Create output directory if it doesn't exist
+    output_dir = f"{base_output_path}_per_worker"
+    os.makedirs(output_dir, exist_ok=True)
+    
+    print(f"Generating per-worker detailed visualizations for {len(sorted_workers)} workers...")
+    
+    # Generate index file with worker links
+    index_html = generate_worker_index_html(sorted_workers, output_dir, global_overview_path)
+    index_path = os.path.join(output_dir, "index.html")
+    with open(index_path, 'w', encoding='utf-8') as f:
+        f.write(index_html)
+    generated_files.append(index_path)
+    
+    # Generate individual worker files
+    for worker in sorted_workers:
+        # Create visualization for this single worker
+        worker_fig = create_detailed_visualization([worker])
+        if worker_fig is None:
+            continue
+            
+        # Update title to include worker information
+        title_text = f"Detailed Thread Timeline - {worker.tier.value} Worker {worker.worker_id}<br><sup>Thread-level execution with SSTable count and data totals</sup>"
+        worker_fig.update_layout(title=title_text)
+        
+        # Generate worker filename
+        worker_filename = os.path.join(output_dir, f"worker{worker.worker_id}.html")
+        
+        # Save the plot
+        worker_fig.write_html(worker_filename)
+        generated_files.append(worker_filename)
+        
+        print(f"  Generated: worker{worker.worker_id}.html ({worker.tier.value} tier)")
+    
+    if generated_files:
+        print(f"Per-worker detailed visualizations saved to: {output_dir}/")
+        print(f"Start browsing from: {index_path}")
+        print(f"Generated {len(generated_files)} files ({len(generated_files)-1} workers + 1 index)")
+    
+    return generated_files
+
+def generate_worker_index_html(workers: List[Worker], output_dir: str, global_overview_path: str = None) -> str:
+    """Generate an index HTML page with links to all worker detail pages."""
+    # Group workers by tier for organized display
+    workers_by_tier = {'LARGE': [], 'MEDIUM': [], 'SMALL': []}
+    for worker in workers:
+        workers_by_tier[worker.tier.value].append(worker)
+    
+    # Calculate some summary stats
+    total_workers = len(workers)
+    total_threads = sum(worker.num_threads for worker in workers)
+    workers_with_data = [w for w in workers if w.threads and any(t.processed_items for t in w.threads)]
+    
+    # Calculate relative path back to global overview if provided
+    import os
+    if global_overview_path:
+        index_path = os.path.join(output_dir, "index.html")
+        back_link = os.path.relpath(global_overview_path, output_dir)
+    else:
+        back_link = "../detailed_results.html"  # fallback
+    
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Worker Detailed Visualizations - Index</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 40px; background-color: #fafafa; }}
+        h1, h2 {{ color: #333; }}
+        .header {{ background-color: #e8f5e8; padding: 20px; border-radius: 8px; margin-bottom: 20px; }}
+        .tier-section {{ background-color: white; padding: 15px; border-radius: 5px; margin-bottom: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }}
+        .worker-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; margin-top: 15px; }}
+        .worker-card {{ background-color: #f8f9fa; padding: 10px; border-radius: 5px; border-left: 4px solid; text-align: center; }}
+        .worker-card a {{ text-decoration: none; color: #333; font-weight: bold; }}
+        .worker-card:hover {{ background-color: #e9ecef; }}
+        .large-tier {{ border-left-color: #636EFA; }}
+        .medium-tier {{ border-left-color: #EF553B; }}
+        .small-tier {{ border-left-color: #00CC96; }}
+        .stats {{ background-color: #fff3e0; padding: 15px; border-radius: 5px; margin-bottom: 20px; }}
+        .back-nav {{ background-color: #e3f2fd; padding: 10px; border-radius: 5px; margin-bottom: 20px; text-align: center; }}
+        .back-nav a {{ text-decoration: none; color: #1976d2; font-weight: bold; }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Worker Detailed Visualizations</h1>
+        <p>Click on any worker below to view its detailed thread timeline visualization.</p>
+    </div>
+    
+    <div class="back-nav">
+        <a href="{back_link}">← Back to Global Overview</a>
+    </div>
+    
+    <div class="stats">
+        <h3>Summary</h3>
+        <p><strong>Total Workers:</strong> {total_workers}</p>
+        <p><strong>Total Threads:</strong> {total_threads}</p>
+        <p><strong>Workers with Data:</strong> {len(workers_with_data)}</p>
+    </div>"""
+    
+    # Add each tier section
+    tier_colors = {'LARGE': 'large-tier', 'MEDIUM': 'medium-tier', 'SMALL': 'small-tier'}
+    tier_names = {'LARGE': 'Large Tier', 'MEDIUM': 'Medium Tier', 'SMALL': 'Small Tier'}
+    
+    for tier in ['LARGE', 'MEDIUM', 'SMALL']:
+        tier_workers = workers_by_tier[tier]
+        if not tier_workers:
+            continue
+            
+        html += f"""
+    <div class="tier-section">
+        <h2>{tier_names[tier]} ({len(tier_workers)} workers)</h2>
+        <div class="worker-grid">"""
+        
+        for worker in sorted(tier_workers, key=lambda w: w.worker_id):
+            # Calculate worker stats
+            num_threads = worker.num_threads
+            active_threads = len([t for t in worker.threads if t.processed_items]) if worker.threads else 0
+            total_sstables = sum(len(t.processed_items) for t in worker.threads) if worker.threads else 0
+            
+            html += f"""
+            <div class="worker-card {tier_colors[tier]}">
+                <a href="worker{worker.worker_id}.html">
+                    <div>Worker {worker.worker_id}</div>
+                    <div style="font-size: 0.8em; color: #666; margin-top: 5px;">
+                        {active_threads}/{num_threads} threads active<br>
+                        {total_sstables} SSTables
+                    </div>
+                </a>
+            </div>"""
+        
+        html += """
+        </div>
+    </div>"""
+    
+    html += """
+</body>
+</html>"""
+    
+    return html 
+
+def create_lightweight_global_overview(workers: List[Worker]) -> go.Figure:
+    """Create a lightweight global overview showing worker summaries without detailed thread data."""
+    if not workers:
+        return None
+    
+    # Sort workers consistently
+    tier_order = {'LARGE': 0, 'MEDIUM': 1, 'SMALL': 2}
+    sorted_workers = sorted(workers, key=lambda w: (tier_order[w.tier.value], w.worker_id))
+    sorted_workers = list(reversed(sorted_workers))  # Reverse for visual display
+    
+    # Create figure
+    fig = go.Figure()
+    
+    # Define colors for each tier
+    tier_colors = {
+        'LARGE': '#636EFA',
+        'MEDIUM': '#EF553B',  
+        'SMALL': '#00CC96'
+    }
+    
+    current_idx = 0
+    worker_labels = []
+    
+    for worker in sorted_workers:
+        # Calculate worker summary stats
+        num_threads = worker.num_threads
+        active_threads = len([t for t in worker.threads if t.processed_items]) if worker.threads else 0
+        total_sstables = sum(len(t.processed_items) for t in worker.threads) if worker.threads else 0
+        total_data_bytes = sum(sum(item.size for item in t.processed_items) for t in worker.threads) if worker.threads else 0
+        
+        # Calculate efficiency
+        efficiency_percent = 0.0
+        if worker.threads:
+            worker_duration = worker.completion_time - worker.start_time
+            total_used_cpu_time = worker_duration * worker.num_threads
+            total_active_cpu_time = sum(thread.total_processing_time for thread in worker.threads)
+            efficiency_percent = (total_active_cpu_time / total_used_cpu_time * 100) if total_used_cpu_time > 0 else 0.0
+        
+        # Create worker label
+        worker_label = f"W{worker.worker_id} ({worker.tier.value[:1]}) - {efficiency_percent:.1f}%"
+        worker_labels.append(worker_label)
+        
+        # Add worker bar
+        fig.add_trace(go.Bar(
+            x=[worker.completion_time - worker.start_time],
+            y=[current_idx],
+            orientation='h',
+            name=f"{worker.tier.value} Workers",
+            base=[worker.start_time],
+            width=0.8,
+            marker_color=tier_colors[worker.tier.value],
+            text=[f"W{worker.worker_id}"],
+            textposition='inside',
+            textfont=dict(size=12, color='white', family='Arial Black'),
+            hovertemplate="<br>".join([
+                "Worker: %{customdata[0]}",
+                "Tier: %{customdata[1]}",
+                "Duration: %{customdata[2]:.2f} units",
+                "Threads: %{customdata[3]} active / %{customdata[4]} total",
+                "SSTables: %{customdata[5]}",
+                "Data Size: %{customdata[6]:.2f} GB",
+                "CPU Efficiency: %{customdata[7]:.1f}%",
+                "",
+                "<b>Use 'Browse All Workers' button above for detailed thread timelines</b>",
+                "<extra></extra>"
+            ]),
+            customdata=[[
+                f"Worker {worker.worker_id}",
+                worker.tier.value,
+                worker.completion_time - worker.start_time,
+                active_threads,
+                num_threads,
+                total_sstables,
+                total_data_bytes / (1024*1024*1024),
+                efficiency_percent
+            ]],
+            showlegend=False
+        ))
+        current_idx += 1
+    
+    # Update layout
+    fig.update_layout(
+        title="Global Worker Overview<br><sup>Lightweight summary view - Use 'Browse All Workers' button above for detailed thread analysis</sup>",
+        autosize=True,
+        height=max(600, current_idx * 30),
+        showlegend=False,
+        hovermode="closest",
+        barmode='stack',
+        bargap=0,
+        bargroupgap=0,
+        yaxis=dict(
+            showticklabels=True,
+            ticktext=worker_labels,
+            tickvals=list(range(len(worker_labels))),
+            showgrid=True,
+            gridwidth=1,
+            gridcolor='rgba(211, 211, 211, 0.5)',
+            side='left',
+            range=[-0.5, current_idx - 0.5]
+        ),
+        xaxis=dict(
+            title="Time Units",
+            showgrid=True,
+            gridwidth=1,
+            gridcolor='rgba(211, 211, 211, 0.5)',
+            zeroline=False,
+            rangemode='tozero',
+            rangeslider=dict(
+                visible=True,
+                thickness=0.10,
+                bgcolor='#E2E2E2'
+            )
+        ),
+        margin=dict(l=180, r=20, t=150, b=50, pad=4),
+        plot_bgcolor='rgba(240, 245, 250, 0.95)'
+    )
+    
+    return fig
+
+def enhance_global_overview_with_navigation(output_path: str, per_worker_files: list):
+    """Add navigation links to the global overview HTML file."""
+    try:
+        # Read the generated HTML
+        with open(output_path, 'r', encoding='utf-8') as f:
+            html_content = f.read()
+        
+        # Calculate the correct relative path to the index.html file
+        index_file = None
+        for file_path in per_worker_files:
+            if file_path.endswith('index.html'):
+                index_file = file_path
+                break
+        
+        if not index_file:
+            print("Warning: No index.html file found in per-worker files")
+            return
+        
+        # Calculate relative path from the output_path to the index file
+        import os
+        output_dir = os.path.dirname(output_path)
+        relative_path = os.path.relpath(index_file, output_dir)
+        
+        # Create navigation HTML with the correct relative path
+        nav_html = f"""
+        <div style="background-color: #e3f2fd; padding: 15px; margin: 20px 0; border-radius: 5px; text-align: center;">
+            <h3 style="margin: 0 0 10px 0; color: #1976d2;">Per-Worker Detailed Analysis</h3>
+            <p style="margin: 0 0 10px 0;">For detailed thread-level analysis, visit the individual worker pages:</p>
+            <a href="{relative_path}" style="display: inline-block; padding: 10px 20px; background-color: #1976d2; color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">
+                📊 Browse All Workers
+            </a>
+        </div>
+        """
+        
+        # Find the body tag and insert navigation
+        body_start = html_content.find('<body>')
+        if body_start != -1:
+            body_start += len('<body>')
+            html_content = html_content[:body_start] + nav_html + html_content[body_start:]
+        
+        # Write the modified HTML back
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+        
+        print(f"Enhanced global overview with navigation links")
+        print(f"Navigation link points to: {relative_path}")
+        
+    except Exception as e:
+        print(f"Warning: Could not enhance global overview with navigation: {e}") 

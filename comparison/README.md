@@ -129,6 +129,10 @@ python3 comparison_tool.py --simple-path ../simple/output/custom_run --tiered-pa
   - Creates: `comparison/output/{name}/comparison_summary_{name}.txt` (tabular report)
 - `--output`, `-o`: Custom CSV file path (overrides organized structure)
 
+**Visual Highlighting**
+- `--data-size-threshold`: Highlight migrations with data size >= threshold (in GB)
+- `--efficiency-threshold`: Highlight tiered migrations with CPU efficiency < threshold (in %)
+
 ### Examples by Use Case
 
 **Quick console comparison:**
@@ -251,12 +255,12 @@ Total CPU Time:
 - **Interpretation**: Shows resource utilization efficiency
 
 ### CPUs
-- **Simple**: Workers × 1 (single-threaded workers)
+- **Simple**: Workers × threads_per_worker (configurable threading per worker)
 - **Tiered**: Sum of (workers × threads_per_tier) across all tiers
 - **Interpretation**: Total parallel processing capacity
 
 ### CPU Time
-- **Simple**: Sum of actual worker execution durations
+- **Simple**: Sum of (worker_duration × threads_per_worker)
 - **Tiered**: Sum of (worker_duration × threads_per_tier)
 - **Interpretation**: Total compute work performed; accounts for parallelization
 
@@ -325,7 +329,7 @@ ls ../tiered/output/your_execution_name/
 ### Calculation Methods
 
 **CPU Time Calculation:**
-- Simple: `sum(worker_duration × 1_thread)`
+- Simple: `sum(worker_duration × threads_per_worker)`
 - Tiered: `sum(worker_duration × threads_per_tier)`
 
 **Worker Counts:**

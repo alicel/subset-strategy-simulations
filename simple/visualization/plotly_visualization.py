@@ -78,7 +78,7 @@ def create_timeline_visualization(workers: List[SimpleWorker]) -> go.Figure:
     # Update layout
     fig.update_layout(
         title={
-            'text': "Simple Simulation Results<br><sup>Single-threaded workers processing subsets sequentially. Numbers indicate worker IDs.</sup>",
+            'text': "Simple Simulation Results<br><sup>Workers processing subsets with configurable thread counts. Numbers indicate worker IDs.</sup>",
             'x': 0.5,
             'xanchor': 'center',
             'y': 0.95,
