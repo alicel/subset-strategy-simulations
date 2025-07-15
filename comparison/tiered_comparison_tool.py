@@ -639,10 +639,10 @@ class TieredComparisonAnalyzer:
             # CSV header
             fieldnames = [
                 'Migration_ID', 'Data_Size_GB',
-                'Exec1_Execution_Time', 'Exec2_Execution_Time', 'Execution_Time_Diff',
-                'Exec1_Workers', 'Exec2_Workers', 'Worker_Diff',
-                'Exec1_CPUs', 'Exec2_CPUs', 'CPU_Diff',
-                'Exec1_CPU_Time', 'Exec2_CPU_Time', 'CPU_Time_Diff',
+                'Exec1_Execution_Time', 'Exec2_Execution_Time', 'Execution_Time_Ex2_minus_Ex1',
+                'Exec1_Workers', 'Exec2_Workers', 'Worker_Ex2_minus_Ex1',
+                'Exec1_CPUs', 'Exec2_CPUs', 'CPU_Ex2_minus_Ex1',
+                'Exec1_CPU_Time', 'Exec2_CPU_Time', 'CPU_Time_Ex2_minus_Ex1',
                 'Exec1_CPU_Active_Time', 'Exec1_CPU_Efficiency_Percent', 'Exec1_CPU_Waste_Percent',
                 'Exec2_CPU_Active_Time', 'Exec2_CPU_Efficiency_Percent', 'Exec2_CPU_Waste_Percent',
                 'Exec1_Small_Workers', 'Exec1_Medium_Workers', 'Exec1_Large_Workers',
@@ -678,16 +678,16 @@ class TieredComparisonAnalyzer:
                     'Data_Size_GB': f"{exec1.total_data_size_gb:.2f}",
                     'Exec1_Execution_Time': f"{exec1.total_execution_time:.2f}",
                     'Exec2_Execution_Time': f"{exec2.total_execution_time:.2f}",
-                    'Execution_Time_Diff': f"{comp.execution_time_diff:.2f}",
+                    'Execution_Time_Ex2_minus_Ex1': f"{comp.execution_time_diff:.2f}",
                     'Exec1_Workers': exec1.total_workers,
                     'Exec2_Workers': exec2.total_workers,
-                    'Worker_Diff': comp.worker_count_diff,
+                    'Worker_Ex2_minus_Ex1': comp.worker_count_diff,
                     'Exec1_CPUs': exec1.total_cpus,
                     'Exec2_CPUs': exec2.total_cpus,
-                    'CPU_Diff': comp.cpu_count_diff,
+                    'CPU_Ex2_minus_Ex1': comp.cpu_count_diff,
                     'Exec1_CPU_Time': f"{exec1.cpu_time:.2f}",
                     'Exec2_CPU_Time': f"{exec2.cpu_time:.2f}",
-                    'CPU_Time_Diff': f"{comp.cpu_time_diff:.2f}",
+                    'CPU_Time_Ex2_minus_Ex1': f"{comp.cpu_time_diff:.2f}",
                     'Exec1_CPU_Active_Time': f"{exec1.total_active_cpu_time:.2f}",
                     'Exec1_CPU_Efficiency_Percent': f"{exec1.average_cpu_efficiency_percent:.2f}",
                     'Exec1_CPU_Waste_Percent': f"{exec1_waste_percent:.2f}",
@@ -799,7 +799,7 @@ class TieredComparisonAnalyzer:
         
         lines.append("")
         lines.append(f"{'Migration':<12} {'Data':<8} {'Execution Time':<30} {'Workers':<25} {'CPUs':<25} {'CPU Time':<30}")
-        lines.append(f"{'ID':<12} {'Size':<8} {exec1_short:<10} {exec2_short:<10} {'Diff':<8} {exec1_short:<8} {exec2_short:<8} {'Diff':<6} {exec1_short:<8} {exec2_short:<8} {'Diff':<6} {exec1_short:<10} {exec2_short:<10} {'Diff':<8}")
+        lines.append(f"{'ID':<12} {'Size':<8} {exec1_short:<10} {exec2_short:<10} {'Ex2 - Ex1':<8} {exec1_short:<8} {exec2_short:<8} {'Ex2 - Ex1':<6} {exec1_short:<8} {exec2_short:<8} {'Ex2 - Ex1':<6} {exec1_short:<10} {exec2_short:<10} {'Ex2 - Ex1':<8}")
         lines.append(f"{'':12} {'(GB)':<8} {'-'*30} {'-'*25} {'-'*25} {'-'*30}")
         
         # Data rows
@@ -1085,16 +1085,16 @@ class TieredComparisonAnalyzer:
             <tr>
                 <th class="group-separator-left">Exec1</th>
                 <th>Exec2</th>
-                <th class="diff-header">Diff</th>
+                <th class="diff-header">Ex2 - Ex1</th>
                 <th class="group-separator-left">Exec1</th>
                 <th>Exec2</th>
-                <th class="diff-header">Diff</th>
+                <th class="diff-header">Ex2 - Ex1</th>
                 <th class="group-separator-left">Exec1</th>
                 <th>Exec2</th>
-                <th class="diff-header">Diff</th>
+                <th class="diff-header">Ex2 - Ex1</th>
                 <th class="group-separator-left">Exec1</th>
                 <th>Exec2</th>
-                <th class="diff-header">Diff</th>
+                <th class="diff-header">Ex2 - Ex1</th>
                 <th class="group-separator-left">Active Time</th>
                 <th>Eff %</th>
                 <th>Waste %</th>
@@ -1128,6 +1128,7 @@ class TieredComparisonAnalyzer:
             # Determine best execution time and CPU time (only when genuinely different)
             best_exec_time = "exec1" if exec1.total_execution_time < exec2.total_execution_time else ("exec2" if exec2.total_execution_time < exec1.total_execution_time else None)
             best_cpu_time = "exec1" if exec1.cpu_time < exec2.cpu_time else ("exec2" if exec2.cpu_time < exec1.cpu_time else None)
+            best_worker_count = "exec1" if exec1.total_workers < exec2.total_workers else ("exec2" if exec2.total_workers < exec1.total_workers else None)
             
             # Format values
             exec1_time_str = self._format_time(exec1.total_execution_time)
@@ -1245,8 +1246,8 @@ class TieredComparisonAnalyzer:
                 <td class="number group-separator-left {'best-time' if best_exec_time == 'exec1' else ''}">{exec1_time_str}</td>
                 <td class="number {'best-time' if best_exec_time == 'exec2' else ''}">{exec2_time_str}</td>
                 <td class="number {exec_time_diff_class}">{exec_time_diff_str}</td>
-                <td class="number group-separator-left">{exec1.total_workers:,}</td>
-                <td class="number">{exec2.total_workers:,}</td>
+                <td class="number group-separator-left {'best-time' if best_worker_count == 'exec1' else ''}">{exec1.total_workers:,}</td>
+                <td class="number {'best-time' if best_worker_count == 'exec2' else ''}">{exec2.total_workers:,}</td>
                 <td class="number {worker_diff_class}">{worker_diff_str}</td>
                 <td class="number group-separator-left">{exec1.total_cpus:,}</td>
                 <td class="number">{exec2.total_cpus:,}</td>
@@ -1281,7 +1282,7 @@ class TieredComparisonAnalyzer:
 
 <div class="aggregate">
     <h2>Legend</h2>
-    <p><span style="background-color: #c8e6c9; padding: 2px 6px; border-radius: 3px;">Green highlighting</span> indicates the best (lowest) execution time, CPU time, and best CPU efficiency for each migration.</p>
+    <p><span style="background-color: #c8e6c9; padding: 2px 6px; border-radius: 3px;">Green highlighting</span> indicates the best (lowest) execution time, CPU time, worker count, and best CPU efficiency for each migration.</p>
     <p><strong>Column Abbreviations:</strong></p>
     <ul>
         <li><strong>W:</strong> Workers (number of workers allocated to each tier)</li>

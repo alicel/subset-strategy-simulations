@@ -1289,6 +1289,7 @@ class ComparisonAnalyzer:
             # Determine best execution time and CPU time (only when genuinely different)
             best_exec_time = "simple" if simple.total_execution_time < tiered.total_execution_time else ("tiered" if tiered.total_execution_time < simple.total_execution_time else None)
             best_cpu_time = "simple" if simple.cpu_time < tiered.cpu_time else ("tiered" if tiered.cpu_time < simple.cpu_time else None)
+            best_worker_count = "simple" if simple.total_workers < tiered.total_workers else ("tiered" if tiered.total_workers < simple.total_workers else None)
             
             # Format values
             simple_time_str = self._format_time(simple.total_execution_time)
@@ -1414,8 +1415,8 @@ class ComparisonAnalyzer:
                 <td class="number group-separator-left {'best-time' if best_exec_time == 'simple' else ''}">{simple_time_str}</td>
                 <td class="number {'best-time' if best_exec_time == 'tiered' else ''}">{tiered_time_str}</td>
                 <td class="number {exec_time_diff_class}">{exec_time_diff_str}</td>
-                <td class="number group-separator-left">{simple.total_workers:,}</td>
-                <td class="number">{tiered.total_workers:,}</td>
+                <td class="number group-separator-left {'best-time' if best_worker_count == 'simple' else ''}">{simple.total_workers:,}</td>
+                <td class="number {'best-time' if best_worker_count == 'tiered' else ''}">{tiered.total_workers:,}</td>
                 <td class="number {worker_diff_class}">{worker_diff_str}</td>
                 <td class="number group-separator-left">{simple.total_cpus:,}</td>
                 <td class="number">{tiered.total_cpus:,}</td>
@@ -1441,7 +1442,7 @@ class ComparisonAnalyzer:
 
 <div class="aggregate">
     <h2>Legend</h2>
-    <p><span style="background-color: #c8e6c9; padding: 2px 6px; border-radius: 3px;">Green highlighting</span> indicates the best (lowest) execution time and CPU time for each migration.</p>
+    <p><span style="background-color: #c8e6c9; padding: 2px 6px; border-radius: 3px;">Green highlighting</span> indicates the best (lowest) execution time, CPU time, and worker count for each migration.</p>
     <p><strong>Column Abbreviations:</strong></p>
     <ul>
         <li><strong>W:</strong> Workers (number of workers allocated to each tier)</li>
