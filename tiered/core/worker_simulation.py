@@ -86,7 +86,7 @@ class Worker:
         except Exception as e:
             raise SimulationError(f"Error processing file {file.full_path} in worker {self.worker_id}: {str(e)}") from e
     
-    def identify_stragglers(self, straggler_threshold_percent: float = 20.0):
+    def identify_stragglers(self, straggler_threshold_percent: float = 10.0):
         """
         Identify straggler threads within this worker.
         
@@ -241,7 +241,7 @@ class Worker:
         return total_size
 
 class MultiTierSimulation:
-    def __init__(self, config: WorkerConfig, straggler_threshold_percent: float = 20.0, 
+    def __init__(self, config: WorkerConfig, straggler_threshold_percent: float = 10.0, 
                  execution_mode: ExecutionMode = ExecutionMode.CONCURRENT, 
                  max_concurrent_workers: int = None):
         self.config = config

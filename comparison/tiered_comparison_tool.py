@@ -156,7 +156,9 @@ class TieredComparisonResult:
             'small_tier_max_sstable_size_gb',
             'small_tier_thread_subset_max_size_floor_gb',
             'medium_tier_max_sstable_size_gb',
+            'medium_tier_thread_subset_max_size_floor_gb',
             'optimize_packing_medium_subsets',
+            'skip_small_subsets',
             'max_num_sstables_per_subset'
         }
         
@@ -774,8 +776,10 @@ class TieredComparisonAnalyzer:
                 'small_tier_thread_subset_max_size_floor_gb', 
                 'small_tier_worker_num_threads',
                 'medium_tier_max_sstable_size_gb',
+                'medium_tier_thread_subset_max_size_floor_gb',
                 'medium_tier_worker_num_threads',
                 'optimize_packing_medium_subsets',
+                'skip_small_subsets',
                 'execution_mode',
                 'max_concurrent_workers'
             ]
@@ -1323,8 +1327,10 @@ class TieredComparisonAnalyzer:
             'small_tier_thread_subset_max_size_floor_gb', 
             'small_tier_worker_num_threads',
             'medium_tier_max_sstable_size_gb',
+            'medium_tier_thread_subset_max_size_floor_gb',
             'medium_tier_worker_num_threads',
             'optimize_packing_medium_subsets',
+            'skip_small_subsets',
             'execution_mode',
             'max_concurrent_workers'
         ]

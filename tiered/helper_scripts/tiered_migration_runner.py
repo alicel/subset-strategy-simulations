@@ -117,9 +117,11 @@ class MigrationRunner:
             'log_level': 'MIGRATION_LOG_LEVEL',
             'medium_tier_max_sstable_size_gb': 'MIGRATION_MEDIUM_TIER_MAX_SSTABLE_SIZE_GB',
             'medium_tier_worker_num_threads': 'MIGRATION_MEDIUM_TIER_WORKER_NUM_THREADS',
+            'medium_tier_thread_subset_max_size_floor_gb': 'MIGRATION_MEDIUM_TIER_THREAD_SUBSET_MAX_SIZE_FLOOR_GB',
             'optimize_packing_medium_subsets': 'MIGRATION_OPTIMIZE_PACKING_MEDIUM_SUBSETS',
             'region': 'MIGRATION_REGION',
             'secret_key': 'MIGRATION_SECRET_KEY',
+            'skip_small_subsets': 'MIGRATION_SKIP_SMALL_SUBSETS',
             'small_tier_max_sstable_size_gb': 'MIGRATION_SMALL_TIER_MAX_SSTABLE_SIZE_GB',
             'small_tier_thread_subset_max_size_floor_gb': 'MIGRATION_SMALL_TIER_THREAD_SUBSET_MAX_SIZE_FLOOR_GB',
             'small_tier_worker_num_threads': 'MIGRATION_SMALL_TIER_WORKER_NUM_THREADS',
@@ -130,12 +132,31 @@ class MigrationRunner:
         # Set environment variables from config
         for config_key, env_var_name in env_var_mapping.items():
             if config_key in migration_config:
-                os.environ[env_var_name] = str(migration_config[config_key])
+                # Convert boolean values to lowercase strings for Go compatibility
+                value = migration_config[config_key]
+                if isinstance(value, bool):
+                    env_value = str(value).lower()
+                else:
+                    env_value = str(value)
+                os.environ[env_var_name] = env_value
                 # Redact sensitive values in logs
                 if any(s in env_var_name.upper() for s in ["KEY", "SECRET", "ACCESS"]):
                     logger.info(f"Set {env_var_name}=***REDACTED***")
                 else:
-                    logger.info(f"Set {env_var_name}={migration_config[config_key]}")
+                    logger.info(f"Set {env_var_name}={env_value}")
+        
+        # Set default values for environment variables if not specified in config
+        if 'skip_small_subsets' not in migration_config:
+            os.environ['MIGRATION_SKIP_SMALL_SUBSETS'] = 'false'
+            logger.info(f"Set MIGRATION_SKIP_SMALL_SUBSETS=false (default)")
+        
+        if 'medium_tier_thread_subset_max_size_floor_gb' not in migration_config:
+            os.environ['MIGRATION_MEDIUM_TIER_THREAD_SUBSET_MAX_SIZE_FLOOR_GB'] = '15'
+            logger.info(f"Set MIGRATION_MEDIUM_TIER_THREAD_SUBSET_MAX_SIZE_FLOOR_GB=15 (default)")
+        
+        if 'optimize_packing_medium_subsets' not in migration_config:
+            os.environ['MIGRATION_OPTIMIZE_PACKING_MEDIUM_SUBSETS'] = 'true'
+            logger.info(f"Set MIGRATION_OPTIMIZE_PACKING_MEDIUM_SUBSETS=true (default)")
         
         # Always set MIGRATION_ID to the current migration ID
         os.environ['MIGRATION_ID'] = migration_id
@@ -165,6 +186,15 @@ class MigrationRunner:
         logger.info(f"Executing command: {' '.join(full_command)}")
         logger.info(f"Working directory: {parent_dir}")
         
+        # Debug: Log all MIGRATION_ environment variables
+        migration_env_vars = {k: v for k, v in os.environ.items() if k.startswith('MIGRATION_')}
+        logger.info(f"MIGRATION environment variables being passed to Go program:")
+        for k, v in sorted(migration_env_vars.items()):
+            if any(s in k.upper() for s in ["KEY", "SECRET", "ACCESS"]):
+                logger.info(f"  {k}=***REDACTED***")
+            else:
+                logger.info(f"  {k}={v}")
+        
         try:
             result = subprocess.run(
                 full_command,
@@ -186,7 +216,7 @@ class MigrationRunner:
                 logger.error(f"Standard output: {e.stdout}")
             return False
     
-    def download_from_s3(self, migration_id: str, execution_name: str = None) -> Optional[str]:
+    def download_from_s3(self, migration_id: str, execution_name: str) -> Optional[str]:
         """Download results from S3 for a specific migration ID."""
         logger.info(f"Downloading results from S3 for migration ID: {migration_id}")
         
@@ -213,12 +243,8 @@ class MigrationRunner:
         script_dir = os.path.dirname(os.path.abspath(__file__))  # helper_scripts directory
         tiered_dir = os.path.dirname(script_dir)  # tiered directory
         
-        if execution_name:
-            # Use new structure: data/downloadedSubsetDefinitions/{execution_name}/
-            base_download_dir = os.path.join(tiered_dir, "data", "downloadedSubsetDefinitions", execution_name)
-        else:
-            # Fallback to old structure for backward compatibility
-            base_download_dir = os.path.join(tiered_dir, "data", "downloadedSubsetDefinitions")
+        # Use execution-name based structure: data/downloadedSubsetDefinitions/{execution_name}/
+        base_download_dir = os.path.join(tiered_dir, "data", "downloadedSubsetDefinitions", execution_name)
             
         os.makedirs(base_download_dir, exist_ok=True)
         
@@ -433,7 +459,7 @@ class MigrationRunner:
         
         return organized_files
 
-    def run_simulation(self, migration_id: str, download_dir: str, execution_name: str = None) -> tuple[bool, dict]:
+    def run_simulation(self, migration_id: str, download_dir: str, execution_name: str) -> tuple[bool, dict]:
         """Run the simulation using downloaded data.
         
         Returns:
@@ -446,11 +472,7 @@ class MigrationRunner:
         # Build the simulation command
         # The input directory should be the full path to the downloaded subset definitions
         # Files are downloaded to tiered directory, simulation runs from tiered directory
-        if execution_name:
-            input_directory = f"data/downloadedSubsetDefinitions/{execution_name}/{migration_id}"
-        else:
-            # Fallback to old structure for backward compatibility
-            input_directory = f"data/downloadedSubsetDefinitions/{migration_id}"
+        input_directory = f"data/downloadedSubsetDefinitions/{execution_name}/{migration_id}"
         command = ['python', 'run_multi_tier_simulation.py', input_directory]
         
         # Worker Configuration - using values from migration section
@@ -515,19 +537,14 @@ class MigrationRunner:
                 output_name = f"{output_name}_{migration_id}"
             command.extend(['--output-name', output_name])
         
-        # Define output directory - use new structure if execution_name provided, otherwise old structure
-        if execution_name:
-            # Use new organized structure directly
-            script_dir = os.path.dirname(os.path.abspath(__file__))  # helper_scripts directory
-            tiered_dir = os.path.dirname(script_dir)  # tiered directory
-            migration_exec_results_dir = os.path.join(tiered_dir, "output", execution_name, migration_id, "migration_exec_results")
-            # Make sure the directory exists
-            os.makedirs(migration_exec_results_dir, exist_ok=True)
-            # Output directory relative to tiered directory (where simulation runs)
-            output_dir = os.path.relpath(migration_exec_results_dir, tiered_dir)
-        else:
-            # Fallback to old structure for backward compatibility
-            output_dir = f"data/simulation_outputs/{migration_id}"
+        # Define output directory using execution-name based structure
+        script_dir = os.path.dirname(os.path.abspath(__file__))  # helper_scripts directory
+        tiered_dir = os.path.dirname(script_dir)  # tiered directory
+        migration_exec_results_dir = os.path.join(tiered_dir, "output", execution_name, migration_id, "migration_exec_results")
+        # Make sure the directory exists
+        os.makedirs(migration_exec_results_dir, exist_ok=True)
+        # Output directory relative to tiered directory (where simulation runs)
+        output_dir = os.path.relpath(migration_exec_results_dir, tiered_dir)
         
         command.extend(['--output-dir', output_dir])
         
@@ -586,7 +603,7 @@ class MigrationRunner:
                 logger.error(f"Standard output: {e.stdout}")
             return False, {}
     
-    def process_migration_range(self, start_id: int, end_id: int, prefix: str = "mig", execution_name: str = None):
+    def process_migration_range(self, start_id: int, end_id: int, execution_name: str, prefix: str = "mig"):
         """Process a range of migration IDs."""
         logger.info(f"Processing migration range: {prefix}{start_id} to {prefix}{end_id}")
         
@@ -626,8 +643,8 @@ class MigrationRunner:
                     failed_migrations.append(migration_id)
                     continue
                 
-                # Organize outputs into new directory structure if execution_name is provided
-                if execution_name and output_files:
+                # Organize outputs into directory structure
+                if output_files:
                     # Get the original output directory from the simulation
                     original_output_dir = None
                     if 'timeline' in output_files:
@@ -655,7 +672,43 @@ class MigrationRunner:
         
         return successful_migrations, failed_migrations, migration_results
     
-    def collect_execution_report_data(self, migration_results: dict, execution_name: str = None) -> dict:
+    def clear_previous_execution_data(self, execution_name: str):
+        """Clear previous execution data for the given execution name.
+        
+        This removes:
+        1. Downloaded subset definitions: data/downloadedSubsetDefinitions/{execution_name}/
+        2. Output files: output/{execution_name}/
+        
+        Args:
+            execution_name: The execution name to clear data for
+        """
+        import shutil
+        
+        logger.info(f"Clearing previous execution data for execution: {execution_name}")
+        
+        # Get paths relative to tiered directory
+        script_dir = os.path.dirname(os.path.abspath(__file__))  # helper_scripts directory
+        tiered_dir = os.path.dirname(script_dir)  # tiered directory
+        
+        # Clear downloaded subset definitions
+        downloaded_subsets_dir = os.path.join(tiered_dir, "data", "downloadedSubsetDefinitions", execution_name)
+        if os.path.exists(downloaded_subsets_dir):
+            logger.info(f"Removing downloaded subset definitions: {downloaded_subsets_dir}")
+            shutil.rmtree(downloaded_subsets_dir)
+        else:
+            logger.info(f"No previous downloaded subset definitions found: {downloaded_subsets_dir}")
+        
+        # Clear output directory
+        output_dir = os.path.join(tiered_dir, "output", execution_name)
+        if os.path.exists(output_dir):
+            logger.info(f"Removing output directory: {output_dir}")
+            shutil.rmtree(output_dir)
+        else:
+            logger.info(f"No previous output directory found: {output_dir}")
+        
+        logger.info(f"Cleanup completed for execution: {execution_name}")
+
+    def collect_execution_report_data(self, migration_results: dict, execution_name: str) -> dict:
         """Collect execution report data from all successful migrations."""
         import json
         import os
@@ -687,8 +740,8 @@ class MigrationRunner:
             json_files = []
             
             try:
-                # Check if files are in the new organized structure
-                if execution_name and 'organized' in output_files and 'migration_exec_results' in output_files['organized']:
+                # Check if files are in the organized structure
+                if 'organized' in output_files and 'migration_exec_results' in output_files['organized']:
                     # Look in the new organized structure
                     logger.debug(f"Looking for JSON files in organized structure for {migration_id}")
                     for file_path in output_files['organized']['migration_exec_results']:
@@ -983,7 +1036,7 @@ class MigrationRunner:
         
         print("\n" + "="*80)
     
-    def run(self, start_id: int, end_id: int, prefix: str = "mig", execution_name: str = None, output_dir: str = "exec_output"):
+    def run(self, start_id: int, end_id: int, execution_name: str, prefix: str = "mig", output_dir: str = "exec_output"):
         """Main execution method."""
         logger.info("Starting Migration Runner")
         
@@ -999,28 +1052,31 @@ class MigrationRunner:
             logger.error(f"Failed to parse configuration: {e}")
             return False
         
-        # Step 3: Process migration range (environment variables are set per migration)
-        successful, failed, migration_results = self.process_migration_range(start_id, end_id, prefix, execution_name)
+        # Step 3: Clear previous execution data
+        self.clear_previous_execution_data(execution_name)
         
-        # Step 4: Collect execution report data
+        # Step 4: Process migration range (environment variables are set per migration)
+        successful, failed, migration_results = self.process_migration_range(start_id, end_id, execution_name, prefix)
+        
+        # Step 5: Collect execution report data
         execution_data = self.collect_execution_report_data(migration_results, execution_name)
         
-        # Step 5: Create new directory structure: tiered/output/{execution_name}/exec_reports/
+        # Step 6: Create new directory structure: tiered/output/{execution_name}/exec_reports/
         script_dir = os.path.dirname(os.path.abspath(__file__))  # helper_scripts directory
         tiered_dir = os.path.dirname(script_dir)  # tiered directory
         execution_output_dir = os.path.join(tiered_dir, "output", execution_name)
         exec_reports_dir = os.path.join(execution_output_dir, "exec_reports")
         os.makedirs(exec_reports_dir, exist_ok=True)
         
-        # Step 6: Generate execution report with new structure
+        # Step 7: Generate execution report with new structure
         report_txt_path = os.path.join(exec_reports_dir, f"execution_report_{execution_name}.txt")
         self.generate_execution_report(execution_data, report_txt_path)
         
-        # Step 7: Generate execution report CSV with new structure
+        # Step 8: Generate execution report CSV with new structure
         report_csv_path = os.path.join(exec_reports_dir, f"execution_report_{execution_name}.csv")
         self.generate_execution_report_csv(execution_data, report_csv_path)
         
-        # Step 8: Print results summary
+        # Step 9: Print results summary
         self.print_results_summary(migration_results)
         
         return len(failed) == 0
@@ -1049,7 +1105,9 @@ migration:
   small_tier_worker_num_threads: 4
   medium_tier_max_sstable_size_gb: 50
   medium_tier_worker_num_threads: 6
-  optimize_packing_medium_subsets: false
+  medium_tier_thread_subset_max_size_floor_gb: 15
+  optimize_packing_medium_subsets: true
+  skip_small_subsets: false
 s3:
   path_template: '{migration_id}/metadata/subsets/{subset_calculation_label}/'
 simulation:
@@ -1060,7 +1118,7 @@ simulation:
     medium_max_workers: 6
     large_max_workers: 10
     enable_straggler_detection: true
-    straggler_threshold: 20.0
+    straggler_threshold: 10.0
     summary_only: false
   custom_args: []
   output:
@@ -1091,7 +1149,9 @@ simulation:
     print("  MIGRATION_SMALL_TIER_WORKER_NUM_THREADS (from config)")
     print("  MIGRATION_MEDIUM_TIER_MAX_SSTABLE_SIZE_GB (from config)")
     print("  MIGRATION_MEDIUM_TIER_WORKER_NUM_THREADS (from config)")
-    print("  MIGRATION_OPTIMIZE_PACKING_MEDIUM_SUBSETS (from config)")
+    print("  MIGRATION_MEDIUM_TIER_THREAD_SUBSET_MAX_SIZE_FLOOR_GB (from config, default: 15)")
+    print("  MIGRATION_OPTIMIZE_PACKING_MEDIUM_SUBSETS (from config, default: true)")
+    print("  MIGRATION_SKIP_SMALL_SUBSETS (from config, default: false)")
     print("  MIGRATION_ID (automatically set to current migration ID)")
     print()
     print("Simulation options configured:")
@@ -1145,7 +1205,7 @@ def main():
     parser = argparse.ArgumentParser(description='Run migration processing for a range of IDs')
     parser.add_argument('--start-id', type=int, help='Starting migration ID')
     parser.add_argument('--end-id', type=int, help='Ending migration ID')
-    parser.add_argument('--execution-name', type=str, help='Name for this execution (used in report filenames)')
+    parser.add_argument('--execution-name', type=str, required=True, help='Name for this execution (used in report filenames and directory organization)')
     parser.add_argument('--prefix', type=str, default='mig', help='Prefix for migration IDs (default: mig)')
     parser.add_argument('--output-dir', type=str, default='exec_output', help='Output directory for execution reports (default: exec_output)')
     parser.add_argument('--config-path', type=str, help='Path to configuration file (default: tiered_migration_runner_config.yaml)')
@@ -1158,8 +1218,8 @@ def main():
         return
     
     # Check required arguments for normal execution
-    if not args.start_id or not args.end_id or not args.execution_name:
-        parser.error("--start-id, --end-id, and --execution-name are required for normal execution")
+    if not args.start_id or not args.end_id:
+        parser.error("--start-id and --end-id are required for normal execution")
     
     try:
         # Find the config file
@@ -1168,7 +1228,7 @@ def main():
         
         # Initialize and run the migration processor
         runner = MigrationRunner(config_path, args.bucket)
-        runner.run(args.start_id, args.end_id, args.prefix, args.execution_name, args.output_dir)
+        runner.run(args.start_id, args.end_id, args.execution_name, args.prefix, args.output_dir)
     except Exception as e:
         logger.error(f"Error: {e}")
         sys.exit(1)

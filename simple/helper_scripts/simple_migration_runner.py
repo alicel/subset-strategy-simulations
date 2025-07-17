@@ -199,7 +199,7 @@ class SimpleMigrationRunner:
                 logger.error(f"Standard output: {e.stdout}")
             return False
     
-    def download_from_s3(self, migration_id: str, execution_name: str = None) -> Optional[str]:
+    def download_from_s3(self, migration_id: str, execution_name: str) -> Optional[str]:
         """Download results from S3 for a specific migration ID."""
         logger.info(f"Downloading results from S3 for migration ID: {migration_id}")
         
@@ -224,13 +224,8 @@ class SimpleMigrationRunner:
         script_dir = os.path.dirname(os.path.abspath(__file__))  # helper_scripts directory
         simple_dir = os.path.dirname(script_dir)  # simple directory
         
-        # Organize by execution name if provided
-        if execution_name:
-            # Use new structure: simple/helper_scripts/downloadedSubsetDefinitions/{execution_name}/
-            base_download_dir = os.path.join(simple_dir, "helper_scripts", "downloadedSubsetDefinitions", execution_name)
-        else:
-            # Fallback to old structure for backward compatibility
-            base_download_dir = os.path.join(simple_dir, "helper_scripts", "downloadedSubsetDefinitions")
+        # Use execution-name based structure: simple/helper_scripts/downloadedSubsetDefinitions/{execution_name}/
+        base_download_dir = os.path.join(simple_dir, "helper_scripts", "downloadedSubsetDefinitions", execution_name)
         
         os.makedirs(base_download_dir, exist_ok=True)
         
@@ -490,7 +485,7 @@ class SimpleMigrationRunner:
                 logger.error(f"Standard output: {e.stdout}")
             return False, {}
     
-    def process_migration_range(self, start_id: int, end_id: int, prefix: str = "mig", execution_name: str = None):
+    def process_migration_range(self, start_id: int, end_id: int, execution_name: str, prefix: str = "mig"):
         """Process a range of migration IDs."""
         successful = []
         failed = []
@@ -547,6 +542,42 @@ class SimpleMigrationRunner:
         
         return successful, failed, migration_results
     
+    def clear_previous_execution_data(self, execution_name: str):
+        """Clear previous execution data for the given execution name.
+        
+        This removes:
+        1. Downloaded subset definitions: simple/helper_scripts/downloadedSubsetDefinitions/{execution_name}/
+        2. Output files: simple/output/{execution_name}/
+        
+        Args:
+            execution_name: The execution name to clear data for
+        """
+        import shutil
+        
+        logger.info(f"Clearing previous execution data for execution: {execution_name}")
+        
+        # Get paths relative to simple directory
+        script_dir = os.path.dirname(os.path.abspath(__file__))  # helper_scripts directory
+        simple_dir = os.path.dirname(script_dir)  # simple directory
+        
+        # Clear downloaded subset definitions
+        downloaded_subsets_dir = os.path.join(script_dir, "downloadedSubsetDefinitions", execution_name)
+        if os.path.exists(downloaded_subsets_dir):
+            logger.info(f"Removing downloaded subset definitions: {downloaded_subsets_dir}")
+            shutil.rmtree(downloaded_subsets_dir)
+        else:
+            logger.info(f"No previous downloaded subset definitions found: {downloaded_subsets_dir}")
+        
+        # Clear output directory
+        output_dir = os.path.join(simple_dir, "output", execution_name)
+        if os.path.exists(output_dir):
+            logger.info(f"Removing output directory: {output_dir}")
+            shutil.rmtree(output_dir)
+        else:
+            logger.info(f"No previous output directory found: {output_dir}")
+        
+        logger.info(f"Cleanup completed for execution: {execution_name}")
+
     def collect_execution_report_data(self, migration_results: dict) -> dict:
         """Collect data for execution report, including migration size data from JSON files."""
         import json
@@ -728,7 +759,7 @@ class SimpleMigrationRunner:
         
         print("\n" + "="*80)
     
-    def run(self, start_id: int, end_id: int, prefix: str = "mig", execution_name: str = None, output_dir: str = None):
+    def run(self, start_id: int, end_id: int, execution_name: str, prefix: str = "mig", output_dir: str = None):
         """Main execution method."""
         logger.info("Starting Simple Migration Runner")
         
@@ -753,24 +784,27 @@ class SimpleMigrationRunner:
             logger.error(f"Failed to parse configuration: {e}")
             return False
         
-        # Step 3: Process migration range (environment variables are set per migration)
-        successful, failed, migration_results = self.process_migration_range(start_id, end_id, prefix, execution_name)
+        # Step 3: Clear previous execution data
+        self.clear_previous_execution_data(execution_name)
         
-        # Step 4: Collect execution report data
+        # Step 4: Process migration range (environment variables are set per migration)
+        successful, failed, migration_results = self.process_migration_range(start_id, end_id, execution_name, prefix)
+        
+        # Step 5: Collect execution report data
         execution_data = self.collect_execution_report_data(migration_results)
         
-        # Step 5: Create output directory if it doesn't exist
+        # Step 6: Create output directory if it doesn't exist
         os.makedirs(output_dir, exist_ok=True)
         
-        # Step 6: Generate execution report with custom naming
+        # Step 7: Generate execution report with custom naming
         report_txt_path = os.path.join(output_dir, f"simple_execution_report_{execution_name}.txt")
         self.generate_execution_report(execution_data, report_txt_path)
         
-        # Step 7: Generate execution report CSV with custom naming
+        # Step 8: Generate execution report CSV with custom naming
         report_csv_path = os.path.join(output_dir, f"simple_execution_report_{execution_name}.csv")
         self.generate_execution_report_csv(execution_data, report_csv_path)
         
-        # Step 8: Print results summary
+        # Step 9: Print results summary
         self.print_results_summary(migration_results)
         
         return len(failed) == 0
@@ -884,7 +918,7 @@ def main():
     parser = argparse.ArgumentParser(description='Run simple migration processing for a range of IDs')
     parser.add_argument('--start-id', type=int, help='Starting migration ID')
     parser.add_argument('--end-id', type=int, help='Ending migration ID')
-    parser.add_argument('--execution-name', type=str, help='Name for this execution (used in report filenames)')
+    parser.add_argument('--execution-name', type=str, required=True, help='Name for this execution (used in report filenames and directory organization)')
     parser.add_argument('--prefix', type=str, default='mig', help='Prefix for migration IDs (default: mig)')
     parser.add_argument('--output-dir', type=str, default=None, help='Output directory for execution reports (default: simple/output/<execution_name>/exec_reports)')
     parser.add_argument('--config-path', type=str, help='Path to configuration file (default: simple_migration_runner_config.yaml)')
@@ -897,8 +931,8 @@ def main():
         return
     
     # Check required arguments for normal execution
-    if not args.start_id or not args.end_id or not args.execution_name:
-        parser.error("--start-id, --end-id, and --execution-name are required for normal execution")
+    if not args.start_id or not args.end_id:
+        parser.error("--start-id and --end-id are required for normal execution")
     
     try:
         # Find the config file
@@ -908,7 +942,7 @@ def main():
         # Initialize and run the migration processor
         runner = SimpleMigrationRunner(config_path, args.bucket)
         
-        runner.run(args.start_id, args.end_id, args.prefix, args.execution_name, args.output_dir)
+        runner.run(args.start_id, args.end_id, args.execution_name, args.prefix, args.output_dir)
     except Exception as e:
         logger.error(f"Error: {e}")
         sys.exit(1)

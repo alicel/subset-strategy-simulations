@@ -85,7 +85,7 @@ def save_configuration(args, config, config_file, total_time, num_files):
             cmd_parts.append(f"--medium-max-workers {args.medium_max_workers}")
         if args.large_max_workers != 10:
             cmd_parts.append(f"--large-max-workers {args.large_max_workers}")
-        if args.straggler_threshold != 20.0:
+        if args.straggler_threshold != 10.0:
             cmd_parts.append(f"--straggler-threshold {args.straggler_threshold}")
         if args.summary_only:
             cmd_parts.append("--summary-only")
@@ -129,8 +129,8 @@ def main():
     parser.add_argument('--small-max-workers', type=int, default=4, help='Maximum concurrent SMALL tier workers')
     parser.add_argument('--medium-max-workers', type=int, default=6, help='Maximum concurrent MEDIUM tier workers')
     parser.add_argument('--large-max-workers', type=int, default=10, help='Maximum concurrent LARGE tier workers')
-    parser.add_argument('--straggler-threshold', type=float, default=20.0, 
-                       help='Percentage threshold above average completion time to identify straggler threads (default: 20.0)')
+    parser.add_argument('--straggler-threshold', type=float, default=10.0, 
+                                               help='Percentage threshold above average completion time to identify straggler threads (default: 10.0)')
     parser.add_argument('--summary-only', action='store_true', help='Show only summary and global timeline, skip detailed views')
     parser.add_argument('--no-stragglers', action='store_true', help='Skip straggler analysis and reporting')
     parser.add_argument('--no-csv', action='store_true', help='Skip CSV data export for automated analysis')
